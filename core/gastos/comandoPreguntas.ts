@@ -5,6 +5,8 @@ import { reenviarPropuestaGasto } from "./reenviarPropuestaGasto";
 import { filtrarConciliacionesPorTexto, importeDeBusqueda, normalizarBusqueda, reenviarPreguntaConciliacion, reenviarPreguntaConciliacionAmbigua } from "./reenviarPreguntaPendiente";
 import { almacenCambiosReal, type CambioPendiente } from "../seguros/agente/cambiosPendientes";
 import { reenviarPropuestaSeguros } from "../seguros/agente/reenviarPropuesta";
+import { obtenerBorradoresCorreoPorChat, type BorradorCorreo } from "../gmail/emailDraftStore";
+import { reenviarBorradorCorreo } from "../gmail/reenviarBorradorCorreo";
 import { montosCercanos } from "../utils/montos";
 import { answerCallbackQuery, sendTelegramMessage } from "../telegram/client";
 import type { InlineKeyboardButton, TelegramCallbackQuery } from "../telegram/types";
@@ -26,6 +28,9 @@ export interface DependenciasComandoPreguntas {
   /** Propuestas de Wobi Seguros (Aplicar / Cancelar) que siguen vigentes. */
   seguros(chatId: number): Promise<CambioPendiente[]>;
   reenviarSeguros(c: CambioPendiente): Promise<unknown>;
+  /** Borradores de correo (Enviar así / Editar / No enviar) aún sin decidir, incluidas las declaraciones de gastos sin soporte. */
+  borradores(chatId: number): Promise<BorradorCorreo[]>;
+  reenviarBorrador(b: BorradorCorreo): Promise<unknown>;
 }
 
 const ENCABEZADO = "🔁 Pregunta pendiente renovada — toca la decisión que quieras aplicar.";
@@ -38,6 +43,8 @@ const depsReales: DependenciasComandoPreguntas = {
   reenviarAmbigua: (p) => reenviarPreguntaConciliacionAmbigua(p, ENCABEZADO),
   seguros: (chatId) => almacenCambiosReal.listarPorChat(chatId),
   reenviarSeguros: reenviarPropuestaSeguros,
+  borradores: obtenerBorradoresCorreoPorChat,
+  reenviarBorrador: (b) => reenviarBorradorCorreo(b, "🔁 Borrador renovado — toca la decisión que quieras aplicar."),
 };
 
 /**
@@ -65,7 +72,7 @@ export interface RespuestaPreguntas {
 }
 
 interface ItemPendiente {
-  /** «p:ID» propuesta de gasto · «s:ID» conciliar · «a:ID» elegir cargo · «w:ID» propuesta de Wobi Seguros: identifica la pendiente en el botón. */
+  /** «p:ID» propuesta de gasto · «s:ID» conciliar · «a:ID» elegir cargo · «w:ID» propuesta de Wobi Seguros · «b:ID» borrador de correo: identifica la pendiente en el botón. */
   clave: string;
   icono: string;
   descripcion: string;
@@ -82,27 +89,30 @@ const resumenSeguros = (c: CambioPendiente): string => {
   } catch { return c.accion; }
 };
 
-function listarPendientes(todasP: PropuestaGasto[], todasS: ConciliacionPendiente[], todasA: ConciliacionAmbiguaPendiente[], todasW: CambioPendiente[], cual: string, deps: DependenciasComandoPreguntas): ItemPendiente[] {
+const resumenBorrador = (b: BorradorCorreo): string => `${b.declaracionId ? "Declaración de gastos sin soporte" : "Correo"} para ${b.to}: ${recortar(b.subject, 50)}`;
+
+function listarPendientes(todasP: PropuestaGasto[], todasS: ConciliacionPendiente[], todasA: ConciliacionAmbiguaPendiente[], todasW: CambioPendiente[], todasB: BorradorCorreo[], cual: string, deps: DependenciasComandoPreguntas): ItemPendiente[] {
   return [
     ...propuestasPorTexto(todasP, cual).map((p) => ({ clave: `p:${p.id}`, icono: "🧾", descripcion: `Propuesta de gasto: ${p.proveedor} — ${p.monto.toFixed(2)} ${p.moneda}`, etiqueta: `${p.proveedor} ${p.monto.toFixed(2)} ${p.moneda}`, enviar: () => deps.reenviarPropuesta(p) })),
     ...filtrarConciliacionesPorTexto(todasS, cual).map((p) => ({ clave: `s:${p.id}`, icono: "🔗", descripcion: `Conciliar: ${p.descripcionGasto}`, etiqueta: p.descripcionGasto, enviar: () => deps.reenviarSimple(p) })),
     ...filtrarConciliacionesPorTexto(todasA, cual).map((p) => ({ clave: `a:${p.id}`, icono: "🎯", descripcion: `Elegir cargo: ${p.descripcionGasto}`, etiqueta: p.descripcionGasto, enviar: () => deps.reenviarAmbigua(p) })),
     ...todasW.filter((c) => !cual.trim() || normalizarBusqueda(`${resumenSeguros(c)} ${c.datos} seguros`).includes(normalizarBusqueda(cual))).map((c) => ({ clave: `w:${c.id}`, icono: "🛡️", descripcion: `Propuesta de Wobi Seguros: ${resumenSeguros(c)}`, etiqueta: `Seguros: ${resumenSeguros(c)}`, enviar: () => deps.reenviarSeguros(c) })),
+    ...todasB.filter((b) => !cual.trim() || normalizarBusqueda(`${b.to} ${b.subject} ${b.cuerpo} correo borrador ${b.declaracionId ? "declaracion" : ""}`).includes(normalizarBusqueda(cual))).map((b) => ({ clave: `b:${b.id}`, icono: "✉️", descripcion: `Borrador pendiente de enviar — ${resumenBorrador(b)}`, etiqueta: resumenBorrador(b), enviar: () => deps.reenviarBorrador(b) })),
   ];
 }
 
 export async function ejecutarComandoPreguntas(chatId: number, cual: string, deps: DependenciasComandoPreguntas = depsReales): Promise<RespuestaPreguntas> {
-  const [todasP, todasS, todasA, todasW] = await Promise.all([deps.propuestas(chatId), deps.simples(chatId), deps.ambiguas(chatId), deps.seguros(chatId)]);
-  const items = listarPendientes(todasP, todasS, todasA, todasW, cual, deps);
+  const [todasP, todasS, todasA, todasW, todasB] = await Promise.all([deps.propuestas(chatId), deps.simples(chatId), deps.ambiguas(chatId), deps.seguros(chatId), deps.borradores(chatId)]);
+  const items = listarPendientes(todasP, todasS, todasA, todasW, todasB, cual, deps);
   if (items.length === 1) {
     await items[0].enviar();
     return { texto: `🔁 Reenvié al final del chat: ${items[0].descripcion}. Toca el botón que corresponda (esto no creó ni concilió nada).` };
   }
   if (items.length === 0) {
-    const hay = todasP.length + todasS.length + todasA.length + todasW.length;
+    const hay = todasP.length + todasS.length + todasA.length + todasW.length + todasB.length;
     return { texto: cual
       ? `No encuentro ninguna pregunta pendiente que coincida con «${cual}».${hay > 0 ? ` Hay ${hay} pendientes: escribe /preguntas sin texto para verlas.` : ""}`
-      : "No hay ninguna propuesta de gasto, pregunta de conciliación ni propuesta de Wobi Seguros pendiente en este chat." };
+      : "No hay ninguna propuesta de gasto, pregunta de conciliación, propuesta de Wobi Seguros ni borrador de correo pendiente en este chat." };
   }
   return {
     texto: `Hay ${items.length} pendientes${cual ? ` que coinciden con «${cual}»` : ""}:\n` +
@@ -123,8 +133,8 @@ export async function handleReenviarPreguntaCallback(callback: TelegramCallbackQ
   if (!chatId || !clave) { await responder("Petición no válida."); return; }
   // Se responde ANTES de leer las tres tablas: Telegram caduca el aviso del botón y, con Sheets lento, llegaba tarde (400).
   await responder("Te la reenvío abajo ↓");
-  const [todasP, todasS, todasA, todasW] = await Promise.all([deps.propuestas(chatId), deps.simples(chatId), deps.ambiguas(chatId), deps.seguros(chatId)]);
-  const items = listarPendientes(todasP, todasS, todasA, todasW, "", deps);
+  const [todasP, todasS, todasA, todasW, todasB] = await Promise.all([deps.propuestas(chatId), deps.simples(chatId), deps.ambiguas(chatId), deps.seguros(chatId), deps.borradores(chatId)]);
+  const items = listarPendientes(todasP, todasS, todasA, todasW, todasB, "", deps);
   const item = clave === "primera" ? items[0] : items.find((i) => i.clave === clave);
   if (!item) { await sendTelegramMessage(chatId, items.length ? "Esa ya no está pendiente. Escribe /preguntas para ver las que quedan." : "No queda nada pendiente."); return; }
   await item.enviar();

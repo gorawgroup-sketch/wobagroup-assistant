@@ -22,9 +22,29 @@ function montar() {
     reenviarAmbigua: async () => undefined,
     seguros: async () => [],
     reenviarSeguros: async () => undefined,
+    borradores: async () => [],
+    reenviarBorrador: async () => undefined,
   };
   return { deps, enviados };
 }
+
+// Caso real 14-10-2026: Carlos borró por error los mensajes de la respuesta a Kelly y de la declaración de gastos sin soporte.
+test("los borradores de correo pendientes (respuesta y declaración) se listan y se reenvían con /preguntas", async () => {
+  const { deps } = montar();
+  const reenviados: string[] = [];
+  const borradores = [
+    { id: "b1", chatId: 1, messageId: 10, to: "kelly@footprint.com", subject: "Re: Soportes", cuerpo: "Hola Kelly", creadoEn: 0 },
+    { id: "b2", chatId: 1, messageId: 11, to: "kelly@footprint.com", subject: "Declaración de gastos sin soporte", cuerpo: "Adjunto", creadoEn: 0, declaracionId: "d1" },
+  ];
+  const d: DependenciasComandoPreguntas = { ...deps, simples: async () => [], borradores: async () => borradores, reenviarBorrador: async (b) => { reenviados.push(b.id); } };
+  const lista = await ejecutarComandoPreguntas(1, "", d);
+  assert.match(lista.texto, /Hay 2 pendientes/);
+  assert.match(lista.texto, /Declaración de gastos sin soporte para kelly@footprint.com/);
+  assert.deepEqual(lista.botones?.slice(1).map((f) => f[0].callback_data), ["preg_r:b:b1", "preg_r:b:b2"]);
+  const una = await ejecutarComandoPreguntas(1, "declaracion", d);
+  assert.match(una.texto, /Reenvié al final del chat/);
+  assert.deepEqual(reenviados, ["b2"]);
+});
 test("con texto que identifica una sola pregunta la reenvía y no toca nada más", async () => {
   const { deps, enviados } = montar();
   const r = await ejecutarComandoPreguntas(1, "metro", deps);
@@ -37,7 +57,7 @@ test("sin texto y con varias pendientes lista y pide precisar; con una sola, la 
   assert.deepEqual(enviados, []); assert.match(lista.texto, /Hay 3 pendientes/); assert.match(lista.texto, /\/preguntas metro/);
   assert.match((await ejecutarComandoPreguntas(1, "inexistente", deps)).texto, /No encuentro ninguna pregunta pendiente que coincida con «inexistente».*Hay 3 pendientes/);
   const vacio = { ...deps, simples: async () => [] };
-  assert.match((await ejecutarComandoPreguntas(1, "", vacio as never)).texto, /No hay ninguna propuesta de gasto, pregunta de conciliación ni propuesta de Wobi Seguros pendiente/);
+  assert.match((await ejecutarComandoPreguntas(1, "", vacio as never)).texto, /No hay ninguna propuesta de gasto, pregunta de conciliación, propuesta de Wobi Seguros ni borrador de correo pendiente/);
   const uno = { ...deps, simples: async () => [(await deps.simples(1))[0]] };
   const m = montar(); await ejecutarComandoPreguntas(1, "", { ...m.deps, simples: uno.simples }); assert.deepEqual(m.enviados, ["a"]);
 });
