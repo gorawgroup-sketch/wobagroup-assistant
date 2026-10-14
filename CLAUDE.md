@@ -11,6 +11,12 @@ existentes, aunque sea más lento. El detalle y el porqué (incidentes reales qu
 están en [docs/principios-de-construccion.md](docs/principios-de-construccion.md) — léelo
 antes de agregar una capacidad nueva.
 
+## Crecer ordenado (Carlos, 2026-10-14)
+
+El sistema será mucho más grande: antes de construir, buscar si ya existe (código, tablero, manual, `/admin/*`,
+`registry.ts`); una decisión tiene una sola función dueña; una capacidad nueva nunca contradice ni rodea un guardarraíl;
+todo lo añadido se registra donde se busca. Detalle en docs/principios-de-construccion.md §«Crecer ordenado».
+
 ## Orden de trabajo — antes de empezar cualquier cosa (Carlos, 2026-10-03)
 
 El sistema crece con varias sesiones a la vez (Claude Code y Codex). Para no crecer desordenado:
