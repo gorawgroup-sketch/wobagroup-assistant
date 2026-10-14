@@ -77,7 +77,7 @@ export class HoldedAuto {
     private readonly renderizarComprobante: typeof generarComprobantePDF = generarComprobantePDF,
     private readonly obtenerTasaCambio: typeof obtenerTasaCambioHistorica = obtenerTasaCambioHistorica,
     /** Fila del registro durable de creaciones de compra por clave (inyectable en pruebas; por defecto, el almacén real). */
-    private readonly registroCreacionPorClave: (clave: string) => Promise<{ holdedPurchaseId?: string } | undefined> =
+    private readonly registroCreacionPorClave: (clave: string) => Promise<{ estado?: string; holdedPurchaseId?: string } | undefined> =
       async (clave) => (await durablePurchaseStore.obtener(clave)) ?? undefined) {}
 
   /** Reutiliza el listado bancario ya descargado al aplicar las reglas multimoneda del flujo manual. */
@@ -458,7 +458,11 @@ export class HoldedAuto {
   private async registroCreacion(op: OperacionAuto): Promise<{ holdedPurchaseId?: string } | undefined> {
     const p = op.plan;
     const identidad = identidadCreacionCompra(`correo-auto:${op.id}`, p.empresa, p.contactoId, p.recibo.fecha, {});
-    return this.registroCreacionPorClave(identidad.clave);
+    const registro = await this.registroCreacionPorClave(identidad.clave);
+    // «preparada» = reservada sin haber llamado a Holded (mismo criterio que consultarCreacionCompraDurable): no empezó.
+    // Caso real 14-10: la operación de Airbnb tenía su fila en «preparada» y seguía bloqueando el correo.
+    if (!registro || registro.estado === "preparada") return undefined;
+    return registro;
   }
   private async compra(op: OperacionAuto): Promise<Registro> {
     if (!op.compraId) throw new Error("No hay ID de compra persistido.");
