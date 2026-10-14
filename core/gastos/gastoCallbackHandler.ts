@@ -3339,7 +3339,7 @@ async function crearGastoYReportar(
     // depende de que exista uno (decisión del propietario, 2026-09-28); los duplicados ya se comprobaron arriba.
     if (conciliarInline || movimientoObjetivo) {
       const objetivos = movimientoObjetivo ? [movimientoObjetivo] : (propuesta.movimientosAmbiguos ?? []);
-      if (!objetivos.length || objetivos.some(m => !candidatoUtilizableParaGasto(propuesta.proveedor, propuesta.concepto, m))) {
+      if (!objetivos.length || objetivos.some(m => !candidatoUtilizableParaGasto(propuesta.proveedor, propuesta.concepto, m, { nombresAlternativos: propuesta.nombresAlternativos }))) {
         throw new Error("No hay un cargo de categoría compatible para conciliar. Puedes crear el gasto sin conciliar; no se concilia contra un cargo que no encaja.");
       }
     }
@@ -4338,6 +4338,7 @@ async function refrescarCargoDePropuesta(propuestaActualizada: PropuestaGasto): 
       monto: propuestaActualizada.monto,
       fecha: propuestaActualizada.fecha,
       moneda: propuestaActualizada.moneda,
+      nombresAlternativos: propuestaActualizada.nombresAlternativos,
       // Esta búsqueda corre bajo una decisión ya marcada por índice: un cargo mayor nuevo en ese índice se conciliaría
       // sin haber sido elegido. El cargo mayor se ofrece al armar la propuesta y al renovar sus botones.
       ofrecerCargoMayor: false,

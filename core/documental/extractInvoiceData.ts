@@ -73,6 +73,20 @@ export interface DatosFacturaVenta {
   concepto: string;
 }
 
+/** Limpia la lista de nombres alternativos del extractor: textos no vacíos, sin repetir y distintos del proveedor. */
+export function nombresEnDocumentoDesde(valor: unknown, proveedor: string): string[] | undefined {
+  if (!Array.isArray(valor)) return undefined;
+  const vistos = new Set<string>([proveedor.trim().toLowerCase()]);
+  const lista: string[] = [];
+  for (const v of valor) {
+    const t = typeof v === "string" ? v.trim() : "";
+    if (t.length < 3 || vistos.has(t.toLowerCase())) continue;
+    vistos.add(t.toLowerCase());
+    lista.push(t.slice(0, 80));
+  }
+  return lista.length ? lista.slice(0, 5) : undefined;
+}
+
 export interface DatosFactura {
   esFacturaOGasto: boolean;
   /**
@@ -121,6 +135,13 @@ export interface DatosFactura {
    * usarse en vez del tag histórico.
    */
   personaAsociada?: string;
+  /**
+   * Otros nombres comerciales impresos en el documento (alojamiento, local, plataforma que cobró) con los que el gasto
+   * puede figurar en el banco cuando el emisor es otro. Caso real 2026-10-14: tasa turística emitida por Italianway en
+   * nombre de Delia Stabile por la estancia en «Queen Home Cinzia»; el cargo era «Queen Home Apartments». El buscador de
+   * cargos los usa como nombres alternativos (OpcionesCompatibilidad.nombresAlternativos).
+   */
+  nombresEnDocumento?: string[];
   /**
    * true si hay evidencia real de que este gasto ocurrió durante un viaje/desplazamiento de trabajo
    * de `personaAsociada`. Pedido explícito de Carlos, casos reales (Simon Talloen, tickets ALDI/
@@ -255,6 +276,16 @@ const REPORTAR_TOOL: Anthropic.Tool = {
           "esa cifra (ej. 'EUR' en '40.46 EUR | 148.346 COP', pero 'USD' en '6.41 USD | 109 MXN'). NUNCA " +
           "asumas que es EUR por defecto — algunas tarjetas están en USD, no en EUR. Lee el símbolo/código " +
           "exacto que acompaña al número.",
+      },
+      nombres_en_documento: {
+        type: "array",
+        items: { type: "string" },
+        description:
+          "Otros nombres comerciales que aparecen en el documento y con los que este gasto puede figurar en el extracto del banco " +
+          "cuando el EMISOR del comprobante es otro: el alojamiento, local o establecimiento donde ocurrió el gasto, la marca o la " +
+          "plataforma que cobró. Ejemplo real: tasa turística emitida por 'Italianway S.p.A.' en nombre de 'Delia Stabile' por una " +
+          "estancia en 'Queen Home Cinzia' → ['Queen Home Cinzia'] (el banco decía 'Queen Home Apartments'). Solo nombres impresos " +
+          "en el documento, nunca inventados ni genéricos ('hotel', 'restaurante'). Vacío si el emisor es el único nombre.",
       },
       persona_asociada: {
         type: "string",
@@ -755,6 +786,7 @@ export async function extraerDatosFactura(
             : undefined,
         personaAsociada: typeof input.persona_asociada === "string" && input.persona_asociada.trim() ? input.persona_asociada.trim() : undefined,
         contextoDeViaje: input.contexto_de_viaje === true || input.contexto_de_viaje === "true",
+        nombresEnDocumento: nombresEnDocumentoDesde(input.nombres_en_documento, proveedor),
         fecha: (input.fecha as string) ?? "",
         numeroDocumento: typeof input.numero_documento === "string" && input.numero_documento.trim() ? input.numero_documento.trim() : numeroDeReservaEnTexto(contextoCorreo),
         datosEnElDocumento: typeof input.datos_en_el_documento === "boolean" ? input.datos_en_el_documento : undefined,

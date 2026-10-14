@@ -31,6 +31,8 @@ export interface CriteriosCargoPropuesta {
   monto: number;
   moneda: string;
   fecha: string;
+  /** Otros nombres del documento (alojamiento, local, plataforma) con los que puede figurar el cargo en el banco. */
+  nombresAlternativos?: string[];
   /**
    * false cuando la búsqueda se repite bajo una decisión que el operador YA marcó por índice («Conciliar con #N»):
    * una lista nueva con un cargo mayor en ese mismo índice lo conciliaría sin que nadie lo hubiera elegido.
@@ -51,7 +53,7 @@ export async function buscarCargoParaPropuesta(
   const traza = crearTrazaBusqueda();
   const exactos = await deps.similar(
     c.empresa,
-    { monto: c.monto, fecha: c.fecha, moneda: c.moneda, proveedor: c.proveedor, concepto: c.concepto, incluirPorConfirmar: true, traza }
+    { monto: c.monto, fecha: c.fecha, moneda: c.moneda, proveedor: c.proveedor, concepto: c.concepto, nombresAlternativos: c.nombresAlternativos, incluirPorConfirmar: true, traza }
   );
   const soloPorConfirmar = exactos.length > 0 && exactos.every((m) => m.compatibilidad === "por_confirmar");
 
@@ -62,7 +64,7 @@ export async function buscarCargoParaPropuesta(
 
   if ((exactos.length === 0 || soloPorConfirmar) && c.proveedor.trim() && !esProveedorNoIdentificado(c.proveedor)) {
     try {
-      const aproximados = await deps.aproximado(c.empresa, { monto: c.monto, fecha: c.fecha, moneda: c.moneda, proveedor: c.proveedor });
+      const aproximados = await deps.aproximado(c.empresa, { monto: c.monto, fecha: c.fecha, moneda: c.moneda, proveedor: c.proveedor, nombresAlternativos: c.nombresAlternativos });
       if (aproximados.length > 0) recomendado = { ...aproximados[0], origenCoincidencia: "aproximada" };
     } catch (error) {
       busquedaCompleta = false;
@@ -77,7 +79,7 @@ export async function buscarCargoParaPropuesta(
   if (!recomendado && ambiguos.length === 0 && busquedaCompleta && c.ofrecerCargoMayor !== false && deps.cargoMayor &&
       c.proveedor.trim() && !esProveedorNoIdentificado(c.proveedor)) {
     try {
-      ambiguos = await deps.cargoMayor(c.empresa, { monto: c.monto, fecha: c.fecha, moneda: c.moneda, proveedor: c.proveedor, concepto: c.concepto });
+      ambiguos = await deps.cargoMayor(c.empresa, { monto: c.monto, fecha: c.fecha, moneda: c.moneda, proveedor: c.proveedor, concepto: c.concepto, nombresAlternativos: c.nombresAlternativos });
     } catch (error) {
       console.error("[buscarCargoParaPropuesta] Error buscando un cargo mayor del proveedor (se sigue sin él):", error instanceof Error ? error.message : error);
     }

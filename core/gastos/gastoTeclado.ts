@@ -250,14 +250,14 @@ export function construirTecladoGasto(propuesta: PropuestaGasto, opciones: Opcio
   // cargo utilizable: categorías contradictorias siguen impidiendo la asociación incluso con importe exacto.
   const fechaValida = esFechaDocumentoValida(propuesta.fecha);
   const cargoCompatible = fechaValida && (propuesta.movimientosAmbiguos ?? []).some(
-    m => candidatoUtilizableParaGasto(propuesta.proveedor, propuesta.concepto, m));
+    m => candidatoUtilizableParaGasto(propuesta.proveedor, propuesta.concepto, m, { nombresAlternativos: propuesta.nombresAlternativos }));
   return filas.map(fila => fila.filter(b => {
     const key = b.callback_data?.split(":")[2];
     if (key === "crear" || key === "nuevo") return fechaValida;
     if (key === "crearconciliar") return cargoCompatible;
     if (key?.startsWith("crearconciliar_")) {
       const m = propuesta.movimientosAmbiguos?.[Number(key.slice("crearconciliar_".length))];
-      return cargoCompatible && Boolean(m && candidatoUtilizableParaGasto(propuesta.proveedor, propuesta.concepto, m));
+      return cargoCompatible && Boolean(m && candidatoUtilizableParaGasto(propuesta.proveedor, propuesta.concepto, m, { nombresAlternativos: propuesta.nombresAlternativos }));
     }
     return true;
   })).filter(fila => fila.length > 0);
