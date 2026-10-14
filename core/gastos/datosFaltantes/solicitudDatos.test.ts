@@ -48,7 +48,7 @@ test("el correo es corporativo, lleva {nombre} y {detalle}, y se personaliza por
 function deps(o: { pendientes?: GastoPendienteDatos[]; yaSolicitados?: string[]; preparadas?: unknown[]; registradas?: unknown[]; respuesta?: string } = {}): DepsSolicitud {
   return {
     pendientes: async () => o.pendientes ?? [], yaSolicitados: async () => new Set(o.yaSolicitados ?? []),
-    preparar: async (_c, creadores) => { o.preparadas?.push(creadores); return o.respuesta ?? "Preparé el correo para 1 persona y lo mostré en el chat con sus botones; no se envió nada todavía."; },
+    preparar: async (_c, creadores) => { o.preparadas?.push(creadores); const texto = o.respuesta ?? "Preparé el correo para 1 persona y lo mostré en el chat con sus botones; no se envió nada todavía."; return texto.startsWith("Error") ? { texto } : { texto, id: "com1" }; },
     registrar: async (p) => { o.registradas?.push(p); }, emailsAdmin: async () => ["asistente@wobagroup.com"],
   };
 }
@@ -66,4 +66,18 @@ test("si preparar el resumen falla no se marca nada como pedido", async () => {
   const registradas: unknown[] = [];
   const r = await prepararSolicitudesDatos(1, { ahora: AHORA }, deps({ pendientes: [pend({ id: "a" })], registradas, respuesta: "Error: faltan datos" }));
   assert.match(r, /^Error/); assert.equal(registradas.length, 0);
+});
+
+test("una solicitud cancelada no cuenta como pedida; una enviada, una pendiente de decidir o una sin enlace, sí; una antigua caduca", async () => {
+  const { pendientesVigentes } = await import("./solicitudDatosStore");
+  const dia = 86_400_000;
+  const filas = [
+    ["p1", "k@x.com", "cancelada", String(AHORA - dia)], ["p2", "k@x.com", "enviada", String(AHORA - dia)], ["p3", "k@x.com", "decidiendo", String(AHORA - dia)],
+    ["p4", "k@x.com", "preparada", String(AHORA - dia)], ["p5", "k@x.com", "rota", String(AHORA - dia)], ["p6", "k@x.com", "enviada", String(AHORA - 10 * dia)],
+  ];
+  const por: Record<string, { destinatarios: Array<{ estado: string }> } | undefined> = {
+    cancelada: { destinatarios: [{ estado: "omitido" }] }, enviada: { destinatarios: [{ estado: "enviado" }] }, decidiendo: { destinatarios: [{ estado: "pendiente" }] },
+  };
+  const v = await pendientesVigentes(filas, AHORA, async (id) => { if (id === "rota") throw new Error("Sheets"); return por[id]; });
+  assert.deepEqual([...v].sort(), ["p2", "p3", "p4", "p5"]);
 });

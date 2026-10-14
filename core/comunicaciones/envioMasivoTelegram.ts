@@ -74,10 +74,15 @@ export async function listarPeticion(p: PeticionEnvio): Promise<string> {
 
 /** Prepara el envío y lo muestra con sus botones; no envía nada. Devuelve el texto para quien lo pidió (herramienta del chat). */
 export async function prepararEnvioMasivo(chatId: number, p: PeticionEnvio): Promise<string> {
+  return (await prepararEnvioMasivoConId(chatId, p)).texto;
+}
+
+/** Igual que `prepararEnvioMasivo`, y además devuelve el id de la comunicación creada (para que quien lo pide pueda enlazar su propio registro). */
+export async function prepararEnvioMasivoConId(chatId: number, p: PeticionEnvio): Promise<{ texto: string; id?: string }> {
   const r = await resolverPeticion(p);
-  if (r.error) return `Error: ${r.error}`;
+  if (r.error) return { texto: `Error: ${r.error}` };
   if (r.destinatarios.length === 0) {
-    return `La audiencia «${p.audiencia}» no tiene ninguna persona con email que consta${r.sinEmail.length ? ` (sin email: ${r.sinEmail.join(", ")})` : ""}. Dime el correo de cada una y vuelvo a prepararlo.`;
+    return { texto: `La audiencia «${p.audiencia}» no tiene ninguna persona con email que consta${r.sinEmail.length ? ` (sin email: ${r.sinEmail.join(", ")})` : ""}. Dime el correo de cada una y vuelvo a prepararlo.` };
   }
   const yaEnviado = await enviosPrevios(p.asunto.trim(), r.destinatarios.map((d) => d.email)).catch(() => [] as string[]);
   const id = randomUUID().slice(0, 8), ahora = Date.now();
@@ -88,7 +93,7 @@ export async function prepararEnvioMasivo(chatId: number, p: PeticionEnvio): Pro
     [{ text: `✅ Enviar a ${r.destinatarios.length}`, callback_data: `cm_e:${id}` }, { text: "❌ Cancelar", callback_data: `cm_c:${id}` }],
   ]);
   await fijarMensaje(id, messageId);
-  return `Preparé el correo para ${r.destinatarios.length} ${r.destinatarios.length === 1 ? "persona" : "personas"} y lo mostré en el chat con sus botones; no se envió nada todavía.`;
+  return { id, texto: `Preparé el correo para ${r.destinatarios.length} ${r.destinatarios.length === 1 ? "persona" : "personas"} y lo mostré en el chat con sus botones; no se envió nada todavía.` };
 }
 
 export async function handleEnvioMasivoCallback(callback: TelegramCallbackQuery): Promise<void> {

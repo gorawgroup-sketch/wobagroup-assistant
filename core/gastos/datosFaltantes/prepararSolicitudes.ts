@@ -1,5 +1,5 @@
 import { obtenerAdmins } from "../../telegram/authorizedUsersSheet";
-import { prepararEnvioMasivo } from "../../comunicaciones/envioMasivoTelegram";
+import { prepararEnvioMasivoConId } from "../../comunicaciones/envioMasivoTelegram";
 import { obtenerGastosPendienteDatosPorChat, type GastoPendienteDatos } from "../gastoPendienteDatosStore";
 import { agruparSolicitudes, ASUNTO_SOLICITUD_DATOS, CUERPO_SOLICITUD_DATOS } from "./solicitudDatos";
 import { pendientesYaSolicitados, registrarSolicitudes } from "./solicitudDatosStore";
@@ -20,7 +20,7 @@ export interface OpcionesSolicitud {
 export interface DepsSolicitud {
   pendientes(chatId: number): Promise<GastoPendienteDatos[]>;
   yaSolicitados(ahora: number): Promise<Set<string>>;
-  preparar(chatId: number, creadores: Array<{ nombre: string; email: string; detalle: string }>): Promise<string>;
+  preparar(chatId: number, creadores: Array<{ nombre: string; email: string; detalle: string }>): Promise<{ texto: string; id?: string }>;
   registrar(pendientes: Array<{ id: string; creador: string }>, comunicacion: string, ahora: number): Promise<void>;
   emailsAdmin(): Promise<string[]>;
 }
@@ -28,7 +28,7 @@ export interface DepsSolicitud {
 const depsReales: DepsSolicitud = {
   pendientes: obtenerGastosPendienteDatosPorChat,
   yaSolicitados: pendientesYaSolicitados,
-  preparar: (chatId, creadores) => prepararEnvioMasivo(chatId, {
+  preparar: (chatId, creadores) => prepararEnvioMasivoConId(chatId, {
     audiencia: "lista", parametros: { destinatarios: creadores },
     asunto: ASUNTO_SOLICITUD_DATOS, cuerpo: CUERPO_SOLICITUD_DATOS,
     descripcion: "Pedir a los creadores de gastos los datos que faltan para registrarlos y conciliarlos",
@@ -48,9 +48,9 @@ export async function prepararSolicitudesDatos(chatId: number, opciones: Opcione
     return opciones.ids ? "Esos gastos no se pueden pedir a su creador: no vienen de un correo, ya se pidieron hace poco o no tienen un dato que preguntar." : "No hay gastos pendientes de datos que haya que pedir a su creador.";
   }
   const resultado = await deps.preparar(chatId, creadores.map(({ nombre, email, detalle }) => ({ nombre, email, detalle })));
-  if (resultado.startsWith("Error")) return resultado;
-  await deps.registrar(creadores.flatMap((c) => c.pendientes.map((id) => ({ id, creador: c.email }))), "preparada", ahora);
-  return `${resultado} Gastos incluidos: ${creadores.reduce((n, c) => n + c.pendientes.length, 0)} (de ${creadores.length} ${creadores.length === 1 ? "persona" : "personas"}).`;
+  if (resultado.texto.startsWith("Error") || !resultado.id) return resultado.texto;
+  await deps.registrar(creadores.flatMap((c) => c.pendientes.map((id) => ({ id, creador: c.email }))), resultado.id, ahora);
+  return `${resultado.texto} Gastos incluidos: ${creadores.reduce((n, c) => n + c.pendientes.length, 0)} (de ${creadores.length} ${creadores.length === 1 ? "persona" : "personas"}).`;
 }
 
 /** Para el job: a todos los superadministradores con pendientes, sin tocar lo ya pedido y dando tiempo a quien opera a contestar primero. */

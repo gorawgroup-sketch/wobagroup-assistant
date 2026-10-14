@@ -44,3 +44,30 @@ test("una respuesta en cadena indica el autor más antiguo visible cuando difier
   const cuerpo = "Recibido.\n\nEl lun, 28 sept 2026 a las 9:44, Alba López Moya (<alba.lopez@raminatrans.com>) escribió:\n> Adjunto BL final.";
   assert.match(textoParaClasificador(cab(c), leerCadena(c, cuerpo), cuerpo), /Remitente real: Simon <simon@footprint\.global>\. Autor más antiguo visible de la cadena: Alba López Moya <alba\.lopez@raminatrans\.com>\./);
 });
+
+// Cadena de respuestas (Carlos, 2026-10-14): solo se lee el ÚLTIMO mensaje; del historial, apenas quién/cuándo/asunto.
+const respuesta = (nuevo: string, citado: string) =>
+  `${nuevo}\n\nEl mar, 6 oct 2026 a las 10:00, Kelly Correales <kelly@footprint.global> escribió:\n> ${citado.replace(/\n/g, "\n> ")}\n> \n> El lun, 5 oct 2026 a las 09:00, Asistente <asistente@wobagroup.com> escribió:\n>> TEXTO MUY ANTIGUO DEL HISTORIAL`;
+
+test("en modo «ultimo» una cadena de respuestas muestra solo el último mensaje y un índice del historial, sin sus textos", () => {
+  const c = "Kelly Correales <kelly@footprint.global>";
+  const cuerpo = respuesta("La fecha del ticket es 15/09/2026.", "Hola, necesitamos la fecha del ticket de Crepes & Waffles.");
+  const lectura = leerCadena(c, cuerpo);
+  assert.ok(lectura.cadena.length > 0, "el formato de prueba debe detectarse como cadena");
+  const t = textoParaClasificador(cab(c), lectura, cuerpo, "ultimo");
+  assert.match(t, /Mensaje nuevo \(lo que escribe quien envía este correo\):\nLa fecha del ticket es 15\/09\/2026\./);
+  assert.match(t, /Historial de la cadena: \d+ mensajes? anteriore?s?s? \(NO se muestran/);
+  assert.match(t, /necesita_cadena=true/);
+  assert.doesNotMatch(t, /TEXTO MUY ANTIGUO DEL HISTORIAL/);
+  assert.doesNotMatch(t, /necesitamos la fecha del ticket de Crepes/);
+  const completa = textoParaClasificador(cab(c), lectura, cuerpo, "completa");
+  assert.match(completa, /necesitamos la fecha del ticket de Crepes/, "el modo completo conserva la lectura de siempre");
+});
+
+test("en modo «ultimo» un reenvío no cambia (el mensaje reenviado es el contenido) y un correo sin cadena entra entero", () => {
+  const c = "Carlos Gonzalez <carlos@wobagroup.com>";
+  const cuerpo = reenvio("Atiende esto.", "Os informamos de las nuevas obligaciones laborales.");
+  assert.equal(textoParaClasificador(cab(c), leerCadena(c, cuerpo), cuerpo, "ultimo"), textoParaClasificador(cab(c), leerCadena(c, cuerpo), cuerpo, "completa"));
+  const simple = "Hola, adjunto el recibo.";
+  assert.equal(textoParaClasificador(cab("Ana <ana@x.com>"), leerCadena("Ana <ana@x.com>", simple), simple, "ultimo"), textoParaClasificador(cab("Ana <ana@x.com>"), leerCadena("Ana <ana@x.com>", simple), simple, "completa"));
+});

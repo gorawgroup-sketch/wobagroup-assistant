@@ -9,7 +9,7 @@ import { resolverModeloDocumental } from "../ai/modelRouting";
 import { obtenerInstruccionesAplicablesCorreo } from "./instruccionesAprendidasStore";
 import { analizarRespuestaDeSoportes } from "../soportes/respuestaSoportes";
 import { leerCadena } from "../correo/lectura/cadena";
-import { lineaRemitenteReal, textoParaClasificador } from "../correo/lectura/paraClasificador";
+import { lineaRemitenteReal, textoParaClasificador, type ModoCadena } from "../correo/lectura/paraClasificador";
 import { leerAdjuntosParaClasificador, lecturaVisualActiva, seccionAdjuntos } from "../correo/lectura/adjuntos";
 import { dependenciasConVision } from "../correo/lectura/adjuntosVisuales";
 import { accionGlobal, listaDePeticiones, normalizarPeticiones, type Peticion } from "../correo/lectura/peticiones";
@@ -45,6 +45,10 @@ export interface AnalisisCorreo {
   razon: string;
   /** Qué pide cada persona y la acción propuesta para cada una (core/correo/lectura/peticiones.ts). */
   peticiones?: Peticion[];
+  /** El análisis en modo «último mensaje» pidió leer la cadena completa; `analizarCorreo` lo repite entero y deja aquí el contexto de la cadena. */
+  necesitaCadena?: boolean;
+  /** Información completa de la cadena (solo cuando hizo falta leerla): se guarda con el análisis para no volver a leerla. */
+  contextoCadena?: string;
 }
 
 const REPORTAR_TOOL_NAME = "reportar_analisis_correo";
@@ -106,6 +110,11 @@ const REPORTAR_TOOL: Anthropic.Tool = {
     },
     required: ["tipo", "resumen", "accion_sugerida", "razon"],
   },
+};
+// Opcional: solo cuando el texto mostrado es el último mensaje de una cadena y hace falta leer los anteriores.
+(REPORTAR_TOOL.input_schema as { properties: Record<string, unknown> }).properties.necesita_cadena = {
+  type: "boolean",
+  description: "true SOLO si para entender o resolver lo que pide el ÚLTIMO mensaje es imprescindible leer los mensajes anteriores de la cadena (no se te han mostrado). Normalmente false.",
 };
 
 function buildSystemPrompt(hayAdjuntos: boolean): string {
@@ -201,6 +210,15 @@ function buildSystemPrompt(hayAdjuntos: boolean): string {
  * solicitud real sobre él).
  */
 export async function analizarCorreo(correo: CorreoResumen, cuerpoCompleto: string, hayAdjuntos = false): Promise<AnalisisCorreo> {
+  // Solo el último mensaje de la cadena (Carlos, 2026-10-14); si el análisis pide la cadena, se repite entero con ella y se guarda su contexto.
+  const primero = await analizarCorreoConModo(correo, cuerpoCompleto, hayAdjuntos, "ultimo");
+  if (!primero.necesitaCadena) return primero;
+  const completo = await analizarCorreoConModo(correo, cuerpoCompleto, hayAdjuntos, "completa");
+  const lectura = leerCadena(correo.de, cuerpoCompleto);
+  return { ...completo, necesitaCadena: undefined, contextoCadena: textoParaClasificador({ de: correo.de, asunto: correo.asunto, fecha: correo.fecha }, lectura, cuerpoCompleto, "completa").slice(0, 40_000) };
+}
+
+async function analizarCorreoConModo(correo: CorreoResumen, cuerpoCompleto: string, hayAdjuntos: boolean, modo: ModoCadena): Promise<AnalisisCorreo> {
   // La respuesta a una solicitud de soportes de tarjeta se analiza cargo por cargo (core/soportes/respuestaSoportes.ts).
   // Si no es una (o falla), sigue el análisis genérico de siempre.
   try {
@@ -246,7 +264,7 @@ export async function analizarCorreo(correo: CorreoResumen, cuerpoCompleto: stri
     : [];
   const userText = [
     contextoAprendido,
-    textoParaClasificador({ de: correo.de, asunto: correo.asunto, fecha: correo.fecha }, lectura, cuerpoCompleto),
+    textoParaClasificador({ de: correo.de, asunto: correo.asunto, fecha: correo.fecha }, lectura, cuerpoCompleto, modo),
     seccionAdjuntos(lecturaAdjuntos),
   ].filter(Boolean).join("\n\n");
 
@@ -298,6 +316,7 @@ export async function analizarCorreo(correo: CorreoResumen, cuerpoCompleto: stri
         accionSugerida: accionGlobal(peticiones, (input.accion_sugerida as string) ?? "Ninguna."),
         razon: (input.razon as string) ?? "",
         peticiones,
+        ...(modo === "ultimo" && input.necesita_cadena === true && lectura.cadena.length > 0 ? { necesitaCadena: true } : {}),
       };
     }
 

@@ -113,3 +113,36 @@ test("la lista de cargos del modelo se acepta como lista, como texto JSON o como
   assert.equal(extraerListaCargos({ cargos: 5 }), undefined);
   assert.equal(extraerListaCargos(undefined), undefined);
 });
+
+import { extraerCuerpoCitado } from "./respuestaSoportes";
+// Caso real (Kelly, 14-10-2026): respondió anotando junto a cada fila de la tabla citada; el cuerpo propio solo traía saludo y firma.
+test("extraerCuerpoCitado conserva la tabla citada con las anotaciones de la persona junto a cada cargo", () => {
+  const cuerpo = [
+    "Hola, les envío.", "Saludos, Kelly", "",
+    "El lun, 13 oct 2026 a las 9:00, Admin Asistente <asistente@wobagroup.com> escribió:",
+    "> 1 | 17/08/2026 | Airbnb * Hm9rh5qbqw | 495,13 USD | Pendiente. ENVIADO",
+    "> 2 | 02/09/2026 | Dlo*serv Uber Eats Ca | 0,45 USD | Pendiente. NO LO ENCUENTRO COMO SOPORTE EN UBER",
+    ">> 7 | 30/09/2026 | Cafe Pergamino 10b | 28,49 USD | Pendiente REENVIADO COMO 21.16 euros - Desayuno com Yanessy - Visa",
+  ].join("\n");
+  const citado = extraerCuerpoCitado(cuerpo);
+  assert.match(citado, /Airbnb \* Hm9rh5qbqw .*ENVIADO/);
+  assert.match(citado, /NO LO ENCUENTRO COMO SOPORTE EN UBER/);
+  assert.match(citado, /^7 \| 30\/09\/2026 .*REENVIADO COMO 21\.16 euros/m);
+  assert.doesNotMatch(citado, /Saludos, Kelly/);
+});
+
+// Carlos, 14-10-2026: en todos los cargos sin comprobante se envía el formato de transacciones sin soporte de la empresa para firma.
+test("un cargo reconocido sin recibo se cubre con la declaración de gastos sin soporte y la acción sugerida la prepara", () => {
+  const a = componerAnalisis({
+    nombre: "Kelly Johanna Correales", empresa: "Footprint", email: "kelly@footprint.global",
+    cargos: [CARGOS[1]],
+    interpretaciones: [{ numero: 1, situacion: "sin_recibo", loQueDice: "No lo encuentro como soporte en Uber, seguramente es un cargo adicional" }],
+    hechos: [{}], soportes: [],
+  });
+  assert.match(a.resumen, /Reconoce el cargo pero no tiene ni puede conseguir el comprobante/);
+  assert.match(a.resumen, /declaración de gastos sin soporte/);
+  assert.match(a.accionSugerida, /preparar_declaracion_gastos_sin_soporte/);
+  assert.match(a.accionSugerida, /Footprint/);
+  assert.match(a.accionSugerida, new RegExp(`id ${CARGOS[1].id}`));
+  assert.doesNotMatch(a.accionSugerida, /pidiéndole solo lo que falta/);
+});
