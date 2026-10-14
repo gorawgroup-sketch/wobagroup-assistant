@@ -9,6 +9,8 @@ import { candidatosMovimientoAuto, centimosComparablesMovimientoAuto, fechaValid
   VERSION_POLITICA, type CorreoAuto, type EmpresaAuto, type EvidenciaAuto, type MovimientoAuto, type OperacionAuto, type ReciboAuto } from "./model";
 import { mapearConConcurrencia } from "../../utils/mapearConConcurrencia";
 import type { HechosCierre } from "./cierreConEvidencia";
+import { identidadCreacionCompra } from "../../holded/durablePurchase";
+import { durablePurchaseStore } from "../../holded/durablePurchaseStore";
 import { generarComprobantePDF } from "../generarComprobantePDF";
 import type { DatosFactura } from "../../documental/extractInvoiceData";
 import { buscarMovimientosPorTipoCambio, type DependenciasBusquedaMultimoneda } from "../../gastos/movimientoMultimoneda";
@@ -449,6 +451,12 @@ export class HoldedAuto {
     e.consultasCompletas = true;
     return e;
   }
+  /** Fila del registro durable de creación de compra de esta operación (misma clave idempotente que `crear`), si existe. */
+  private async registroCreacion(op: OperacionAuto): Promise<{ holdedPurchaseId?: string } | undefined> {
+    const p = op.plan;
+    const identidad = identidadCreacionCompra(`correo-auto:${op.id}`, p.empresa, p.contactoId, p.recibo.fecha, {});
+    return await durablePurchaseStore.obtener(identidad.clave) ?? undefined;
+  }
   private async compra(op: OperacionAuto): Promise<Registro> {
     if (!op.compraId) throw new Error("No hay ID de compra persistido.");
     return this.get(op.plan.empresa, `/purchases/${idUrl(op.compraId)}`);
@@ -750,7 +758,13 @@ export class HoldedAuto {
    */
   async leerHechosCierre(op: OperacionAuto): Promise<HechosCierre> {
     const p = op.plan;
-    if (!op.compraId) return { compra: null, adjuntos: 0, comprobanteCoincide: null, movimiento: null };
+    if (!op.compraId) {
+      // Sin compraId la única prueba está en el registro durable de creaciones (se reserva antes de llamar a Holded):
+      // sin fila, la escritura nunca empezó; con fila y compra verificada, se verifica esa compra como si fuera propia.
+      const registro = await this.registroCreacion(op);
+      if (registro?.holdedPurchaseId) return this.leerHechosCierre({ ...op, compraId: registro.holdedPurchaseId });
+      return { compra: null, adjuntos: 0, comprobanteCoincide: null, movimiento: null, escrituraRegistrada: Boolean(registro) };
+    }
     const c = await this.compra(op);
     const importe = (valor: unknown): number => centimos(valor ?? 0, true);
     const detalle = Array.isArray(c.payments_detail) ? c.payments_detail.map(objeto) : [];
