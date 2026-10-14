@@ -82,8 +82,13 @@ async function conversionTicketsHoldedInterna(opciones: { revisionNocturna?: boo
     // Gastos que la regla no puede decidir sola: se pregunta con botones (máx. 6 por ciclo; el resto, en el siguiente).
     for (const d of dudosos.slice(0, 6)) await preguntarDudosoPorBoton(d).catch((error) => console.error("[conversionTicketsHolded] No se pudo preguntar por un gasto dudoso:", error instanceof Error ? error.message : error));
     if (nuevos.length > 0) {
-      const lista = nuevos.slice(0, 12).map((c) => `  • ${etiquetaEmpresa(c.empresa)} · ${c.proveedor} · ${c.total} ${c.moneda} (${c.fecha}) — ${c.motivos.join("; ")}`).join("\n");
-      await notificarAdmins(`🧾 Regla de ticket (${reglaModo === "activo" ? "ACTIVA: se convierten solos cuando estén conciliados y con comprobante" : "SIMULACIÓN: no se convierte nada"}): ${nuevos.length} candidato(s) nuevo(s)\n${lista}${nuevos.length > 12 ? `\n  … y ${nuevos.length - 12} más` : ""}`).catch(() => undefined);
+      // Aviso con acción clara (Carlos, 14-10-2026: «no me envíes mensajes en los que yo no pueda hacer nada»): en modo activo se dice qué
+      // va a pasar y que no hace falta hacer nada; en simulación, que no se convierte nada. Los motivos técnicos de la regla no se listan.
+      const lista = nuevos.slice(0, 12).map((c) => `  • ${etiquetaEmpresa(c.empresa)} · ${c.proveedor} · ${c.total} ${c.moneda} (${c.fecha})`).join("\n");
+      const cabecera = reglaModo === "activo"
+        ? `🧾 Tickets: ${nuevos.length} gasto(s) nuevo(s) cumplen la regla de ticket. Se convertirán solos en cuanto estén conciliados y con comprobante; te avisaré de cada conversión. No tienes que hacer nada.`
+        : `🧾 Tickets (SIMULACIÓN, no se convierte nada): ${nuevos.length} gasto(s) nuevo(s) cumplirían la regla.`;
+      await notificarAdmins(`${cabecera}\n${lista}${nuevos.length > 12 ? `\n  … y ${nuevos.length - 12} más` : ""}`).catch(() => undefined);
     }
   }
   // Lista aprobada por Carlos: WOBI_HOLDED_TICKETS_CASO="Empresa:id,Empresa:id,…". Mientras exista, SOLO se tocan esos gastos
@@ -93,6 +98,17 @@ async function conversionTicketsHoldedInterna(opciones: { revisionNocturna?: boo
   for (const caso of casos) await registrarCasoAprobado(almacen, caso.empresa, caso.id);
   const resumen = await procesarColaTickets({ almacen, navegador: crearNavegadorHolded, soloIds });
   console.log("[conversionTicketsHolded]", JSON.stringify({ modo, revisados: resumen.revisados, porEstado: resumen.porEstado }));
+  // Cada conversión real se comunica (antes solo se avisaba de la lista aprobada y de los dudosos): es el cierre del aviso anterior.
+  const convertidos = resumen.detalle.filter((d) => d.estado === "completado");
+  if (modo === "activo" && convertidos.length > 0) {
+    const lineas: string[] = [];
+    for (const d of convertidos.slice(0, 15)) {
+      const t = await almacen.obtener(d.clave).catch(() => undefined);
+      const [, empresa, id] = d.clave.split(":");
+      lineas.push(`  • ${etiquetaEmpresa(empresa as Parameters<typeof etiquetaEmpresa>[0])} · ${String(t?.evidencia?.proveedor ?? "")} (${(id ?? "").slice(0, 8)}…)`);
+    }
+    await notificarAdmins(`✅ Convertidos a ticket en Holded: ${convertidos.length} gasto(s). No hay nada que hacer.\n${lineas.join("\n")}`).catch(() => undefined);
+  }
   if (resumen.disyuntor) {
     registrarTraza("disyuntor_conversion", { casosInesperados: resumen.disyuntor });
     const dia = fechaHoyEspana();
