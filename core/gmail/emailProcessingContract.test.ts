@@ -160,3 +160,13 @@ test("la cola aparca el correo activo cuando el dato que falta ya se pidió al c
   assert.match(fn, /avanzarColaCorreoSiActivo\(chatId, \{ threadId: activo\.id, mensajeId: activo\.mensajeId \}/);
   assert.match(fuente, /if \(activo && await aparcarActivoSiEsperaAlCreador\(chatId, activo\)\)/);
 });
+
+// Caso real RODOAR (14-10-2026): el comprobante venía en un mensaje anterior del hilo; la cola solo miraba el último.
+test("procesarCorreoLocalizado procesa el mensaje anterior del hilo con adjuntos pendientes, conservando la identidad de la cola", async () => {
+  const fuente = await readFile(join(process.cwd(), "core/jobs/revisarCorreoNuevo.ts"), "utf8");
+  const fn = fuente.slice(fuente.indexOf("async function procesarCorreoLocalizado("), fuente.indexOf("async function procesarCorreoLocalizado(") + 3000);
+  const identidad = fn.indexOf("const identidadCola: IdentidadCorreoCola = {");
+  const eleccion = fn.indexOf("mensajeDelHiloConAdjuntosPendientes(correo)");
+  assert.ok(identidad >= 0 && eleccion > identidad, "la identidad de la cola se fija ANTES de cambiar de mensaje");
+  assert.match(fn, /if \(anterior\) \{[\s\S]*correo = anterior;/);
+});
