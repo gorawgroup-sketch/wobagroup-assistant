@@ -105,6 +105,35 @@ crítica (`.github/areas-criticas.json`) mientras otro PR abierto más antiguo l
 (`core/gmail/automatico/casos/`): cada incidente de correo se cierra añadiendo su caso de extremo a extremo con el informe
 que debe salir, para que ninguna causa vuelva a disfrazarse de otra.
 
+## Crecer ordenado (Carlos, 2026-10-14): el sistema será mucho más grande que hoy
+
+Direccionamiento literal: *«todo lo que construyamos debe estar muy organizado… para que el sistema siga estable y no se
+contradiga en órdenes ni destruya lo que ya está trabajando correctamente. Este sistema va a seguir creciendo en
+funcionalidades y agentes, por lo que la construcción debe hacerse siempre pensando en que va a ser mucho más grande».*
+Caso del día: pedí construir «un punto de administración para reprocesar correos» y ya existía desde el día anterior
+(`/admin/proponer-accion`, PR #480, otra sesión). Reglas que lo hacen cumplir:
+
+1. **Antes de construir, buscar.** Toda capacidad nueva empieza con una búsqueda en el código y en el tablero
+   (`docs/trabajo-en-curso.md`, `docs/manual_comandos_chat.md`, `src/server.ts` para puntos `/admin/*`, `core/tools/registry.ts`
+   para herramientas). Si existe algo que cubre el 80 %, se extiende; nunca se levanta un segundo mecanismo al lado.
+2. **Una decisión, un dueño.** Cada pregunta del sistema («¿este cargo es este gasto?», «¿este correo ya se procesó?»,
+   «¿a quién se le envía?») se responde en UNA función, y todas las rutas la llaman. Un cambio de criterio se hace ahí y
+   se prueba con los casos reales acumulados; nunca con un `if` nuevo en una ruta.
+3. **Las órdenes no se contradicen.** Una capacidad nueva no puede desactivar ni rodear un guardarraíl existente (norma
+   de resolución autónoma, escrituras con botón, topes de coste, no cruzar empresas, errores no tragados, columnas
+   derivadas de HEADERS). Si una regla nueva choca con una vieja, se decide explícitamente cuál manda, se escribe en el
+   código de la función dueña y en este documento, y se añade la prueba del caso.
+4. **Todo lo que se añade queda registrado donde se busca.** Herramienta → `registry.ts` y manual; punto de
+   administración → comentario en `src/server.ts` y sección «Operación desde el servidor» del manual; almacén → primitivos
+   de `sheetsKeyValueStore.ts` y última columna derivada de HEADERS; agente → `COBERTURA_NORMA`; trabajo → fila en el tablero.
+   Lo que no está registrado no existe para la siguiente sesión, y se volverá a construir.
+5. **Lo que ya funciona no se toca sin su prueba.** Cambiar un módulo compartido exige reproducir primero su caso real
+   en una prueba (banco de casos, pruebas de contrato) y dejarla; la verificación en vivo es sobre el caso que falló,
+   no sobre el caso feliz.
+6. **Crecer por capas, no por parches.** Nuevas funcionalidades y agentes viven en su carpeta (`core/<area>/`) con su
+   documento en `docs/`, se enganchan por los 3 puntos de extensión de arriba y hablan con el resto por funciones
+   exportadas, nunca leyendo el estado interno de otro módulo.
+
 ## Cuándo un archivo compartido es una señal de alerta
 
 Si un archivo empieza a acumular módulos o casos no relacionados entre sí — más de un par
