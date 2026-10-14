@@ -3,12 +3,11 @@ import type { InlineKeyboardButton } from "../telegram/types";
 /** Teclado acotado y ligado a una pendiente exacta de verificacion. */
 export function botonesVerificacionDuplicadoPendiente(id: string): InlineKeyboardButton[][] {
   return [
-    [{ text: "🔄 Ya lo liberé: reprocesar", callback_data: `gpd_reintentar:${id}` }],
-    [{ text: "➡️ Dejar pendiente y seguir", callback_data: `gpd_posponer:${id}` }],
-    [{ text: "✅ Análisis correcto: cerrar y seguir", callback_data: `gpd_confirmar:${id}` }],
-    // Norma de resolución autónoma (Carlos, 08-10-2026, recibo de Anthropic): el cargo de hoy llega al banco mañana y el
-    // movimiento «probable» ya conciliado es otro. Sin esta salida, no había forma de crear el gasto y conciliarlo después.
-    [{ text: "➕ Crear el gasto ahora, sin conciliar (el cargo llega después)", callback_data: `gpd_crear:${id}` }],
+    // Rótulos que dicen qué hace cada botón (Carlos, 14-10-2026: «los botones no me dicen mucho»).
+    [{ text: "➕ Es otro cargo: crear el gasto (concilio después)", callback_data: `gpd_crear:${id}` }],
+    [{ text: "🔄 Volver a comprobar el banco y reprocesar", callback_data: `gpd_reintentar:${id}` }],
+    [{ text: "✅ Ya estaba registrado: cerrar este correo", callback_data: `gpd_confirmar:${id}` }],
+    [{ text: "➡️ Aplazar este correo y seguir con la cola", callback_data: `gpd_posponer:${id}` }],
   ];
 }
 
@@ -16,7 +15,7 @@ export function botonesVerificacionDuplicadoPendiente(id: string): InlineKeyboar
  * la lectura o aplazar este correo sin tocar Holded y seguir con los demás. */
 export function botonesFalloTemporalVerificacionPendiente(id: string): InlineKeyboardButton[][] {
   return [
-    [{ text: "🔄 Reintentar verificación", callback_data: `gpd_reintentar:${id}` }],
-    [{ text: "➡️ Dejar pendiente y seguir", callback_data: `gpd_posponer:${id}` }],
+    [{ text: "🔄 Reintentar la verificación en Holded", callback_data: `gpd_reintentar:${id}` }],
+    [{ text: "➡️ Aplazar este correo y seguir con la cola", callback_data: `gpd_posponer:${id}` }],
   ];
 }

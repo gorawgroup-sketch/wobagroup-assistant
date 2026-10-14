@@ -45,6 +45,7 @@ import type { DatosFactura } from "../documental/extractInvoiceData";
 import type { Empresa } from "../holded/client";
 import { esProveedorNoIdentificado } from "../holded/duplicateSignals";
 import { buscarGastoProcesadoPorIdentidad, registrarGastoDesdeCorreo } from "./gastoPorCorreoStore";
+import { conciliadosCercanosAlComprobante } from "./conciliadosCercanos";
 import { buscarCompraEnlazadaAlCargo } from "./gastoYaRegistradoPorCargo";
 import { buscarMismaEstanciaRegistrada } from "./mismaEstanciaRegistrada";
 import { calcularHuellaContenido } from "./identidadGasto";
@@ -736,6 +737,17 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     movimientosYaConciliados = [];
   }
   if (movimientosYaConciliados.length > 0) {
+    // Proveedores recurrentes (Anthropic cada dos días): un cargo conciliado de OTRA fecha no es este recibo. Solo bloquean los
+    // cercanos a la fecha del comprobante; los lejanos se apartan y la búsqueda normal encuentra el cargo libre del día.
+    const { cercanos, lejanos } = conciliadosCercanosAlComprobante(movimientosYaConciliados, datos.fecha);
+    if (lejanos.length) {
+      console.log("[procesarGastoEntrante] Cargos conciliados apartados por fecha lejana al comprobante:", {
+        fechaComprobante: datos.fecha, apartados: lejanos.map((m) => `${m.descripcion} ${m.fecha}`),
+      });
+      movimientosYaConciliados = cercanos;
+    }
+  }
+  if (movimientosYaConciliados.length > 0) {
     // Caso real (Carlos, 08-10-2026, Anthropic VJCCOFZT-0016): el cargo conciliado puede estar enlazado a ESTE mismo gasto,
     // ya registrado como ticket (invisible en /purchases) y con otro número. Se sigue el cargo hasta su compra antes de
     // hablar de «otro documento» o de ofrecer crear nada. Solo lecturas; un fallo no decide nada y se sigue como antes.
@@ -801,8 +813,8 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
             `queda tratado como duplicado y no se habilita “Crear gasto”.`
           : `volver a conciliarlo automáticamente. Wobi no encontró una compra visible asociada mediante la API, por lo que NO afirma que el gasto ` +
             `esté creado: el movimiento puede estar vinculado a un ticket que la API no lista, a otro documento, o tener un estado incoherente. ` +
-            `Abre este movimiento en Holded y revisa qué documento tiene enlazado. Si el vínculo es incorrecto, libéralo allí y dime “ya lo liberé, ` +
-            `reintenta”. El correo seguirá pendiente y sin marcar como leído hasta resolver esa relación.`);
+            `Abre este movimiento en Holded y revisa qué documento tiene enlazado. Si es OTRO cargo (proveedor recurrente), pulsa «Es otro cargo: crear el gasto». ` +
+            `Si el vínculo es incorrecto, libéralo en Holded y pulsa «Volver a comprobar el banco». El correo seguirá pendiente y sin marcar como leído hasta resolver esa relación.`);
 
     if (hayCompraVisible) {
       await sendTelegramMessage(chatId, mensajeMovimientoYaConciliado);
