@@ -3552,7 +3552,9 @@ async function crearGastoYReportar(
   const datosConciliacionPendiente = {
     empresa: empresaFinal,
     monto: propuesta.monto,
-    fecha: propuesta.fecha,
+    // La pregunta «¿conciliar?» busca el cargo cerca de SU fecha: si la propuesta ya tenía cargos candidatos, la de ellos
+    // (la fecha del documento puede haberse sustituido por la de hoy por un periodo contable cerrado).
+    fecha: propuesta.movimientosAmbiguos?.[0]?.fecha || propuesta.fecha,
     descripcionGasto: `${nombreContacto} — ${propuesta.monto} ${propuesta.moneda}`,
     gastoId: gasto.id,
     moneda: propuesta.moneda,
@@ -3731,8 +3733,14 @@ async function manejarFechaBloqueada(
     motivoReintento: texto,
   });
 
+  // El cargo bancario ya identificado no cambia porque cambie la fecha del documento: si la propuesta traía un
+  // movimiento recomendado, el botón crea Y concilia contra ese movimiento (por su id). Antes creaba sin conciliar y la
+  // pregunta posterior buscaba el cargo cerca de la fecha de HOY, donde no está (casos reales 14-10: tasa turística 8 €
+  // y Airbnb 495,13 USD, ambos «no encontré un movimiento» con el cargo identificado desde el principio).
+  const recomendado = movimientoRecomendadoPropuesta(nuevaPropuesta);
   const botones = [
-    [{ text: `✅ Sí, usar ${fechaHoy}`, callback_data: `gasto_nuevo:${nuevaPropuesta.id}` }],
+    [{ text: recomendado ? `✅ Sí, usar ${fechaHoy} y conciliar con el cargo del ${recomendado.fecha}` : `✅ Sí, usar ${fechaHoy}`,
+       callback_data: `${recomendado ? "gasto_nuevo_conciliar" : "gasto_nuevo"}:${nuevaPropuesta.id}` }],
     [{ text: "❌ Cancelar", callback_data: `gasto_cancelar:${nuevaPropuesta.id}` }],
   ];
 

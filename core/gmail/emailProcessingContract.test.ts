@@ -141,3 +141,12 @@ test("los nombres alternativos del documento llegan a la pregunta de conciliaci�
   assert.match(store, /const ULTIMA_COLUMNA = String\.fromCharCode\(64 \+ HEADERS\.length\)/);
   for (const rango of store.match(/`\$\{TAB_NAME\}!A[^`]*:[^`]*`/g) ?? []) assert.match(rango, /\$\{ULTIMA_COLUMNA\}/, `rango fijo: ${rango}`);
 });
+
+// Periodo contable cerrado (casos reales 14-10): «Sí, usar hoy» concilia contra el cargo ya identificado y la pregunta busca en la fecha del cargo.
+test("con la fecha bloqueada, el botón concilia contra el movimiento recomendado y la pregunta usa la fecha del cargo", async () => {
+  const fuente = await readFile(join(process.cwd(), "core/gastos/gastoCallbackHandler.ts"), "utf8");
+  const bloque = fuente.slice(fuente.indexOf("async function manejarFechaBloqueada"), fuente.indexOf("async function manejarFechaBloqueada") + 4000);
+  assert.match(bloque, /movimientoRecomendadoPropuesta\(nuevaPropuesta\)/);
+  assert.match(bloque, /recomendado \? "gasto_nuevo_conciliar" : "gasto_nuevo"/);
+  assert.match(fuente, /fecha: propuesta\.movimientosAmbiguos\?\.\[0\]\?\.fecha \|\| propuesta\.fecha,/);
+});
