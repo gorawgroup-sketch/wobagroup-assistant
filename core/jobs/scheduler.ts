@@ -11,6 +11,7 @@ import { revisarAdjuntosDuplicados } from "./revisarAdjuntosDuplicados";
 import { ejecutarCierreInciertas } from "./cerrarInciertasAntiguas";
 import { ejecutarAuditoriaCargosExactos } from "./auditoriaCargosExactos";
 import { ejecutarSeguimientoComunicaciones } from "./seguimientoComunicaciones";
+import { ejecutarSolicitudDatosFaltantes } from "./solicitarDatosFaltantes";
 import { revisarAplazamientoImpuestos } from "./revisarAplazamientoImpuestos";
 import { revisarAnotacionesCashflow } from "./revisarAnotacionesCashflow";
 import { revisarAccionesProgramadas } from "./revisarAccionesProgramadas";
@@ -299,6 +300,15 @@ export function startScheduler(): void {
     { timezone: TIMEZONE }
   );
   console.log(`[scheduler] seguimientoComunicaciones programado: laborables 9:20 y 16:20 (${TIMEZONE})`);
+  // Pide a los creadores de gastos lo que falta en sus comprobantes (solo prepara el correo con botón; nada sale sin «Enviar»).
+  cron.schedule(
+    "5 9,15 * * 1-5",
+    () => {
+      ejecutarSinSolapamiento("solicitarDatosFaltantes", () => ejecutarSolicitudDatosFaltantes());
+    },
+    { timezone: TIMEZONE }
+  );
+  console.log(`[scheduler] solicitarDatosFaltantes programado: laborables 9:05 y 15:05 (${TIMEZONE})`);
 
   cron.schedule(
     "10 8 * * *",

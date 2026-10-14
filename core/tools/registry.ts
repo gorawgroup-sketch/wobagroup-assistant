@@ -59,6 +59,7 @@ import { leerAdjuntosCompraHoldedTool } from "./leerAdjuntosCompraHolded";
 import { revisarCorreoPuntualTool } from "./revisarCorreoPuntual";
 import { proponerCorreoAAudienciaTool } from "./proponerCorreoAAudiencia";
 import { seguimientoComunicacionesTool } from "./seguimientoComunicaciones";
+import { solicitarDatosFaltantesTool } from "./solicitarDatosFaltantes";
 import { revisarColaCorreoTool } from "./revisarColaCorreo";
 import { avanzarColaCorreoTool } from "./avanzarColaCorreo";
 import { gestionarContactoAutorespuestaTool } from "./gestionarContactoAutorespuesta";
@@ -141,6 +142,7 @@ const tools: ToolDefinition[] = [
   revisarCorreoPuntualTool,
   proponerCorreoAAudienciaTool,
   seguimientoComunicacionesTool,
+  solicitarDatosFaltantesTool,
   revisarColaCorreoTool,
   avanzarColaCorreoTool,
   gestionarContactoAutorespuestaTool,
