@@ -544,6 +544,10 @@ Al terminar el dictado, revisa el texto y pulsa Consultar. Puedes editar nombres
 
 Un borrador sin enviar muestra Corregir texto y Cancelar y empezar de nuevo, junto a Enviar a WOBi en Telegram. Corregir cancela primero el borrador en el servidor y devuelve el texto al campo editable. Si la cancelación no se confirma, se mantiene la referencia y se consulta el estado. Una solicitud ya recibida o en ejecución no se presenta como cancelada.
 
+## Respuestas a la solicitud de soportes anotadas en la tabla
+
+Muchas personas contestan a la solicitud de soportes escribiendo junto a cada fila de la tabla que se les envió («ENVIADO», «REENVIADO», «REENVIADO COMO 21.16 euros - …», «NO LO ENCUENTRO…»). Wobi lee el cuerpo propio de la respuesta y además la tabla citada, y toma esas anotaciones como la respuesta a cada cargo: «enviado/reenviado» se comprueba en Holded (si el cargo ya está conciliado, nada que hacer) y «no lo encuentro / no tengo recibo» (reconoce el cargo pero no tiene comprobante) se cubre con la **declaración de gastos sin soporte** de la empresa: la acción sugerida prepara el documento con esos cargos (`preparar_declaracion_gastos_sin_soporte`) y, al pulsar «Proceder», se responde a la persona y se le propone el correo con la declaración para firma; firmada, queda como soporte en Holded (norma de Carlos, 14-10-2026: en todos los casos sin soporte). Antes solo leía el cuerpo sin citas y decía «no dice nada» de cargos que sí estaban anotados (caso Kelly, 14-10-2026).
+
 ## Preguntas de datos cuyo dato ya se pidió al creador
 
 Cuando un gasto de correo espera un dato (fecha, moneda, comercio, empresa) y ese dato **ya se le pidió a quien envió el comprobante** (`solicitar_datos_faltantes_a_creadores`, registro en `_solicitudes_datos_gasto`), la cola de revisión no se detiene a esperar al operador: el correo queda aparcado («el dato que falta ya se le pidió a X; queda en espera de su respuesta») y la revisión sigue con el siguiente. La pregunta sigue viva: se resuelve con la respuesta del creador (su correo entra por la cola) o contestando por chat. (Carlos, 14-10-2026, caso Kelly / Crepes & Waffles.)
