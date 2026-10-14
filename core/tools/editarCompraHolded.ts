@@ -1,4 +1,4 @@
-import { buscarDocumentosHolded } from "../holded/write";
+import { buscarDocumentosHolded, obtenerCompraHoldedPorId, numeroDesdeHolded } from "../holded/write";
 import { crearPendienteEdicionCompraHolded, actualizarMessageIdEdicionCompraHolded } from "../holded/pendienteEdicionCompraHoldedStore";
 import { sendTelegramMessageWithButtons } from "../telegram/client";
 import type { Empresa } from "../holded/client";
@@ -34,7 +34,11 @@ export const proponerEdicionCompraHoldedTool: ToolDefinition = {
       empresa: { type: "string", enum: ["WOBA", "EWORKS", "Footprint"], description: "Empresa del grupo cuyo Holded se edita." },
       contacto: {
         type: "string",
-        description: "Nombre (o parte del nombre) del proveedor de la compra a corregir — ej. 'McDonald's', 'OUIGO'.",
+        description: "Nombre (o parte del nombre) del proveedor de la compra a corregir — ej. 'McDonald's', 'OUIGO'. Opcional si das compra_id.",
+      },
+      compra_id: {
+        type: "string",
+        description: "Id exacto de la compra en Holded (24 caracteres hexadecimales). Si lo das, se usa esa compra sin buscar por nombre: es el único camino para los tickets, que no salen en la búsqueda por proveedor.",
       },
       monto_actual_aproximado: {
         type: "number",
@@ -49,7 +53,7 @@ export const proponerEdicionCompraHoldedTool: ToolDefinition = {
         description: "El monto TOTAL correcto a dejar (ej. el total con IVA real de la factura). Opcional si solo se corrige el número de documento.",
       },
     },
-    required: ["empresa", "contacto"],
+    required: ["empresa"],
   },
   handler: async (input, context) => {
     const chatId = context?.chatId;
@@ -63,8 +67,12 @@ export const proponerEdicionCompraHoldedTool: ToolDefinition = {
     }
 
     const contacto = typeof input.contacto === "string" ? input.contacto.trim() : "";
-    if (!contacto) {
-      return "Error: hace falta 'contacto' (nombre o parte del nombre del proveedor de la compra a corregir).";
+    const compraId = typeof input.compra_id === "string" ? input.compra_id.trim().toLowerCase() : "";
+    if (compraId && !/^[a-f0-9]{24}$/.test(compraId)) {
+      return "Error: 'compra_id' debe ser el id de Holded (24 caracteres hexadecimales).";
+    }
+    if (!contacto && !compraId) {
+      return "Error: hace falta 'contacto' (nombre o parte del nombre del proveedor de la compra a corregir) o 'compra_id'.";
     }
 
     const numeroDocumentoNuevo =
@@ -76,7 +84,19 @@ export const proponerEdicionCompraHoldedTool: ToolDefinition = {
 
     const montoActualAprox = typeof input.monto_actual_aproximado === "number" ? input.monto_actual_aproximado : undefined;
 
-    const encontrados = await buscarDocumentosHolded(empresa, { contacto, monto: montoActualAprox, tipo: "gasto", dias: 365 });
+    let encontrados;
+    if (compraId) {
+      // Lectura directa por id: los tickets no salen en el listado de compras, pero sí por id. Un fallo de Holded no se confunde con «no existe».
+      const c = await obtenerCompraHoldedPorId(empresa, compraId);
+      const total = numeroDesdeHolded(c.total);
+      if (!(total > 0)) return `Error: no pude leer el total de la compra ${compraId} en Holded (${empresa}); no propongo nada.`;
+      encontrados = [{
+        id: c.id, contactName: String((c as { contact_name?: string }).contact_name ?? ""), total, moneda: String(c.currency ?? "EUR").toUpperCase(),
+        documentNumber: String(c.document_number ?? ""), fecha: String(c.date ?? "").slice(0, 10), coincidenciaSoloPorMonto: false,
+      }];
+    } else {
+      encontrados = await buscarDocumentosHolded(empresa, { contacto, monto: montoActualAprox, tipo: "gasto", dias: 365 });
+    }
 
     if (encontrados.length === 0) {
       return `No encontré ninguna compra de "${contacto}" en Holded (${empresa}) en el último año (ni con fecha pasada ni futura) — verifica el nombre del proveedor, o si es de otra empresa.`;

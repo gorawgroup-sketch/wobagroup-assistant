@@ -4359,7 +4359,7 @@ export async function obtenerCompraHoldedPorId(empresa: Empresa, purchaseId: str
  * más de 999€. Ahora se quitan TODOS los puntos (miles) antes de convertir
  * la coma (decimal) a punto.
  */
-function numeroDesdeHolded(valor: string | number | null | undefined): number {
+export function numeroDesdeHolded(valor: string | number | null | undefined): number {
   if (typeof valor === "number") return valor;
   if (!valor) return 0;
   const limpio = String(valor).replace(/\./g, "").replace(",", ".");
@@ -5578,6 +5578,17 @@ export async function buscarMovimientoAproximado(
  * moneda que el gasto y cerca de su fecha, a los que les queda libre al menos el importe del gasto. Ver cargoMayor.ts.
  * Solo informa: quien llama los ofrece como «Conciliar con #N»; nunca se autoselecciona ni se concilia sin el operador.
  */
+/**
+ * Plataformas que cobran la reserva en su nombre aunque la factura la emita el alojamiento (caso real 2026-10-14, Footprint: dos facturas de
+ * Queen Home Apartments, 158,92 y 92,52 €, pagadas con UN cargo «Hotel At Booking.com» de 251,44 €). Para un gasto de hospedaje, un cargo de una
+ * de estas plataformas puede ser el pago aunque el nombre del emisor no aparezca en el banco; solo se ofrece, nunca se concilia solo.
+ */
+// `normalizar` quita los puntos («booking.com» → «bookingcom»): por eso no se exige límite de palabra al final ni se escriben con punto.
+const INTERMEDIARIOS_DE_RESERVAS = /\b(booking|airbnb|expedia|hotelscom|agoda|tripcom|despegar|kayak)/;
+export function esCargoDeIntermediarioDeReservas(proveedor: string, concepto: string, descripcionCargo: string): boolean {
+  return INTERMEDIARIOS_DE_RESERVAS.test(normalizar(descripcionCargo)) && inferirTagsCategoria(concepto, proveedor).includes("hospedaje");
+}
+
 export async function buscarCargoMayorDelProveedor(
   empresa: Empresa,
   criterios: { monto: number; fecha: string; moneda?: string; proveedor: string; concepto?: string }
@@ -5620,7 +5631,9 @@ export async function buscarCargoMayorDelProveedor(
       if ((mov.currency ?? "EUR").toUpperCase().trim() !== monedaObjetivo) continue;
       if (!mov.description) continue;
       // El nombre del proveedor tiene que estar en el cargo: la categoría sola («otro alquiler de coches») no basta.
-      if (!nombreReconocidoEnDescripcion(criterios.proveedor, mov.description, { nucleoDeMarca: true })) continue;
+      // Excepción: un alojamiento pagado a través de una plataforma de reservas (ver esCargoDeIntermediarioDeReservas).
+      if (!nombreReconocidoEnDescripcion(criterios.proveedor, mov.description, { nucleoDeMarca: true }) &&
+          !esCargoDeIntermediarioDeReservas(criterios.proveedor, criterios.concepto ?? "", mov.description)) continue;
       // Mismo criterio que el teclado (candidatoUtilizableParaGasto): no se anuncia un cargo cuyo botón no saldría.
       if (!movimientoCompatibleConGasto(criterios.proveedor, criterios.concepto ?? "", mov.description, { nucleoDeMarca: true })) continue;
       // Un solo lector de importes de movimiento (punto decimal) para la oferta y para la validación al aprobar.
