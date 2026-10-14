@@ -842,7 +842,7 @@ export async function ofrecerEleccionMovimientosAmbiguos(
         ? describirMovimientoMultimoneda(m, i)
         : m.origenCoincidencia === "cargo_mayor" && montoGasto !== undefined
         ? describirCargoMayor(m, montoGasto, i)
-        : `  ${i + 1}. "${m.descripcion || "(sin descripción)"}" — ${m.monto.toFixed(2)} ${m.moneda} (${m.fecha})${m.compatibilidad === "por_confirmar" ? " ⚠️ nombre distinto" : m.compatibilidad === "aprendido" ? " ✔ confirmado antes para este proveedor" : ""}`)
+        : `  ${i + 1}. "${m.descripcion || "(sin descripción)"}" — ${m.monto.toFixed(2)} ${m.moneda} (${m.fecha})${m.aviso ? ` ⚠️ ${m.aviso}` : m.compatibilidad === "por_confirmar" ? " ⚠️ nombre distinto" : m.compatibilidad === "aprendido" ? " ✔ confirmado antes para este proveedor" : ""}`)
       .join("\n");
     await sendTelegramMessageWithButtons(
       chatId,
