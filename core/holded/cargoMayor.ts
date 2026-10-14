@@ -11,7 +11,11 @@
  */
 
 /** Días hacia atrás y hacia delante de la fecha del comprobante en los que se busca el cargo mayor. */
-export const DIAS_ATRAS_CARGO_MAYOR = 10;
+/**
+ * 45 días: un documento puede llevar la fecha de HOY porque su mes estaba cerrado en Holded (caso Queen, 2026-10-14: gasto del 20-09 registrado
+ * el 14-10, cargo del 14-09). Con 10 días, el cargo desaparecía de la búsqueda en cuanto la fecha se movía.
+ */
+export const DIAS_ATRAS_CARGO_MAYOR = 45;
 export const DIAS_ADELANTE_CARGO_MAYOR = 5;
 /** Tope de cargos «a la espera de su resto» que se enseñan a la vez (los más cercanos en fecha). */
 export const MAX_CANDIDATOS_CARGO_MAYOR = 3;
