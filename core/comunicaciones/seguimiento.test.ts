@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { asuntoConValorYMoneda, debeAvisar, seguirComunicacion, textoSeguimiento, type MensajeEntrante } from "./seguimiento";
+import { asuntoConValorYMoneda, debeAvisar, esLaMismaPersona, seguirComunicacion, textoSeguimiento, type MensajeEntrante } from "./seguimiento";
 import type { Comunicacion } from "./envioMasivoStore";
 
 /**
@@ -15,7 +15,7 @@ const com: Comunicacion = {
   ],
 };
 const msg = (o: Partial<MensajeEntrante> = {}): MensajeEntrante => ({ id: "m1", threadId: "m1", de: "Simon <simon@footprint.global>", asunto: "Uber aeropuerto · 12,50 EUR · Footprint", fecha: "2026-10-14T10:00:00Z", esRespuesta: false, adjuntos: [{ nombre: "recibo.pdf", partId: "1", estado: "propuesta_pendiente" }], ...o });
-const deps = (por: Record<string, MensajeEntrante[]>) => ({ entrantes: async (email: string) => por[email] ?? [] });
+const deps = (por: Record<string, MensajeEntrante[]>) => ({ entrantes: async (p: { nombre: string; email: string }) => por[p.email] ?? [] });
 
 test("el formato pedido: el asunto lleva un valor con su moneda (y una respuesta «Re:» no cuenta por el prefijo)", () => {
   assert.equal(asuntoConValorYMoneda("Uber aeropuerto · 12,50 EUR · Footprint"), true);
@@ -51,4 +51,15 @@ test("solo avisa si hay novedades; sin ellas, una sola vez a los 7 días por qui
   assert.deepEqual(debeAvisar(com, conNovedad, true, T0 + 3600_000), { avisar: true, porSinRespuesta: false });
   const todosVistos = await seguirComunicacion(com, new Set(["m1", "k"]), deps({ "simon@footprint.global": [msg()], "kelly@footprint.global": [msg({ id: "k", de: "kelly" })] }));
   assert.equal(debeAvisar(com, todosVistos, false, T0 + 3600_000).avisar, false);
+});
+
+test("la misma persona escribe desde otra dirección: vale el nombre visible con dos palabras en común, no un nombre de pila suelto", () => {
+  const simon = { nombre: "Simon Talloen", email: "simon@footprint.global" };
+  assert.equal(esLaMismaPersona("Simon Talloen <s.talloen@gmail.com>", simon), true, "Gmail personal");
+  assert.equal(esLaMismaPersona("Simon <simon@footprint.global>", simon), true, "la dirección a la que se escribió");
+  assert.equal(esLaMismaPersona("Simon Peters <simon.p@x.com>", simon), false, "solo el nombre de pila");
+  assert.equal(esLaMismaPersona("\"Kelly J. Correales Ducuara\" <k@x.com>", { nombre: "Kelly Johanna Correales Ducuara", email: "kelly@footprint.global" }), true);
+  assert.equal(esLaMismaPersona("Alberto Comolli <alberto@wobagroup.com>", { nombre: "Alberto Comolli", email: "alberto@footprint.global" }), true, "otro dominio de la misma persona");
+  assert.equal(esLaMismaPersona("Carlos Gonzalez <carlos@wobagroup.com>", { nombre: "Alberto Comolli", email: "alberto@footprint.global" }), false);
+  assert.equal(esLaMismaPersona("no-reply@airbnb.com", simon), false);
 });

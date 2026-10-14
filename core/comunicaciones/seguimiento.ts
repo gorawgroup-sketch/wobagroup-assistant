@@ -27,13 +27,29 @@ export interface SeguimientoPersona {
 }
 
 export interface DepsSeguimiento {
-  entrantes(email: string, desdeMs: number): Promise<MensajeEntrante[]>;
+  entrantes(persona: { nombre: string; email: string }, desdeMs: number): Promise<MensajeEntrante[]>;
+}
+
+const palabras = (t: string): string[] => t.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").split(" ").filter((w) => w.length >= 2);
+
+/**
+ * ¿Este remitente es la persona? Muchos escriben desde otra dirección (Simon manda sus gastos desde su Gmail personal, Alberto tiene dos dominios): vale la
+ * dirección a la que se le escribió, o un nombre visible que comparta al menos DOS palabras con el suyo («Kelly J. Correales Ducuara» ↔ «Kelly Johanna
+ * Correales Ducuara»). Un solo nombre de pila no basta: «Carlos» no es cualquier Carlos.
+ */
+export function esLaMismaPersona(deHeader: string, persona: { nombre: string; email: string }): boolean {
+  const m = /<([^>]+)>/.exec(deHeader);
+  const direccion = (m ? m[1] : deHeader).trim().toLowerCase();
+  if (direccion === persona.email.trim().toLowerCase()) return true;
+  const visible = m ? deHeader.slice(0, m.index).replace(/"/g, "") : "";
+  const suyas = new Set(palabras(persona.nombre));
+  return new Set(palabras(visible).filter((w) => suyas.has(w))).size >= 2;
 }
 
 export async function seguirComunicacion(com: Comunicacion, vistos: ReadonlySet<string>, deps: DepsSeguimiento): Promise<SeguimientoPersona[]> {
   const salida: SeguimientoPersona[] = [];
   for (const d of com.destinatarios) {
-    const mensajes = (await deps.entrantes(d.email, com.cabecera.creadoEn)).sort((a, b) => Date.parse(a.fecha) - Date.parse(b.fecha));
+    const mensajes = (await deps.entrantes({ nombre: d.nombre, email: d.email }, com.cabecera.creadoEn)).sort((a, b) => Date.parse(a.fecha) - Date.parse(b.fecha));
     salida.push({ nombre: d.nombre, email: d.email, mensajes, nuevos: mensajes.filter((m) => !vistos.has(m.id)) });
   }
   return salida;
