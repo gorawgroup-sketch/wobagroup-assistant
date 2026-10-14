@@ -113,3 +113,20 @@ test("la lista de cargos del modelo se acepta como lista, como texto JSON o como
   assert.equal(extraerListaCargos({ cargos: 5 }), undefined);
   assert.equal(extraerListaCargos(undefined), undefined);
 });
+
+import { extraerCuerpoCitado } from "./respuestaSoportes";
+// Caso real (Kelly, 14-10-2026): respondió anotando junto a cada fila de la tabla citada; el cuerpo propio solo traía saludo y firma.
+test("extraerCuerpoCitado conserva la tabla citada con las anotaciones de la persona junto a cada cargo", () => {
+  const cuerpo = [
+    "Hola, les envío.", "Saludos, Kelly", "",
+    "El lun, 13 oct 2026 a las 9:00, Admin Asistente <asistente@wobagroup.com> escribió:",
+    "> 1 | 17/08/2026 | Airbnb * Hm9rh5qbqw | 495,13 USD | Pendiente. ENVIADO",
+    "> 2 | 02/09/2026 | Dlo*serv Uber Eats Ca | 0,45 USD | Pendiente. NO LO ENCUENTRO COMO SOPORTE EN UBER",
+    ">> 7 | 30/09/2026 | Cafe Pergamino 10b | 28,49 USD | Pendiente REENVIADO COMO 21.16 euros - Desayuno com Yanessy - Visa",
+  ].join("\n");
+  const citado = extraerCuerpoCitado(cuerpo);
+  assert.match(citado, /Airbnb \* Hm9rh5qbqw .*ENVIADO/);
+  assert.match(citado, /NO LO ENCUENTRO COMO SOPORTE EN UBER/);
+  assert.match(citado, /^7 \| 30\/09\/2026 .*REENVIADO COMO 21\.16 euros/m);
+  assert.doesNotMatch(citado, /Saludos, Kelly/);
+});

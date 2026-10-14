@@ -72,6 +72,18 @@ export function limpiarCuerpoSinCitas(cuerpo: string): string {
   return propias.join("\n").replace(/\n{3,}/g, "\n\n").trim();
 }
 
+/**
+ * El correo citado (la solicitud que se le envió), sin las marcas «>»: muchas personas contestan ESCRIBIENDO JUNTO A CADA FILA de
+ * la tabla citada («ENVIADO», «REENVIADO», «REENVIADO COMO 21.16 euros - …», «NO LO ENCUENTRO…»). Caso real (Kelly, 14-10-2026):
+ * el lector solo miraba el cuerpo sin citas y concluyó «no dice nada» de 6 cargos que ella había anotado uno a uno.
+ */
+export function extraerCuerpoCitado(cuerpo: string): string {
+  const lineas = cuerpo.replace(/\r/g, "").split("\n");
+  const corte = lineas.findIndex((l, i) => /^\s*(on|el)\b.{0,120}(wrote|escribi[óo]):?\s*$/i.test(l) || (/^\s*(on|el)\b.{0,80}$/i.test(l) && /(wrote|escribi[óo]):?\s*$/i.test(lineas[i + 1] ?? "")));
+  const citadas = corte >= 0 ? lineas.slice(corte + 1) : lineas.filter((l) => /^\s*>/.test(l));
+  return citadas.map((l) => l.replace(/^\s*(>\s?)+/, "")).join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
 /** «Re: Footprint · Soportes pendientes de tus gastos con tarjeta (…)» → { empresa }; undefined si no es la respuesta a esa solicitud. */
 export function parsearAsuntoRespuesta(asunto: string): { empresa: Empresa } | undefined {
   const t = asunto.replace(/^(\s*(re|rv|fwd?|fw)\s*:\s*)+/i, "").trim();
@@ -189,7 +201,7 @@ export function componerAnalisis(params: {
 
 const TOOL_NAME = "reportar_respuesta_soportes";
 
-async function interpretarUnaVez(cargos: CargoCorreo[], cuerpo: string, adjuntos: Array<{ nombre: string; resumen: string }>): Promise<InterpretacionCargo[]> {
+async function interpretarUnaVez(cargos: CargoCorreo[], cuerpo: string, adjuntos: Array<{ nombre: string; resumen: string }>, citado = ""): Promise<InterpretacionCargo[]> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) throw new Error("Falta la variable de entorno ANTHROPIC_API_KEY");
   const cliente = new Anthropic({ apiKey });
@@ -224,7 +236,7 @@ async function interpretarUnaVez(cargos: CargoCorreo[], cuerpo: string, adjuntos
   const respuesta = await crearMensajeAnthropic(cliente, ejecucion, {
     model: resolverModeloDocumental("clasificar_correo"),
     max_tokens: 8192,
-    system: "Lees la respuesta de una persona a un correo que le pidió los soportes (facturas/recibos) de cargos hechos con su tarjeta. Para CADA cargo de la tabla, di qué responde de ese cargo concreto, leyendo el cuerpo completo (no las citas). Nunca asumas que algo está resuelto si no lo dice. Termina siempre llamando a la herramienta." + "\n\n" + NORMA_EXTRACTOR,
+    system: "Lees la respuesta de una persona a un correo que le pidió los soportes (facturas/recibos) de cargos hechos con su tarjeta. Para CADA cargo de la tabla, di qué responde de ese cargo concreto, leyendo el cuerpo completo Y la tabla citada: es muy habitual que la persona conteste escribiendo junto a cada fila de la tabla que se le envió («ENVIADO», «REENVIADO», «REENVIADO COMO …», «NO LO ENCUENTRO…»); esas anotaciones son su respuesta a ese cargo («enviado/reenviado» = soporte_enviado_antes; «no lo encuentro / no tengo» = no_reconoce o lo que diga). Nunca asumas que algo está resuelto si no lo dice. Termina siempre llamando a la herramienta." + "\n\n" + NORMA_EXTRACTOR,
     tools: [tool],
     tool_choice: { type: "tool", name: TOOL_NAME },
     messages: [{
@@ -235,7 +247,9 @@ async function interpretarUnaVez(cargos: CargoCorreo[], cuerpo: string, adjuntos
         "",
         `Adjuntos del correo:\n${adjuntos.length ? adjuntos.map((a) => `- ${a.nombre}: ${a.resumen}`).join("\n") : "(ninguno)"}`,
         "",
-        `Respuesta de la persona (sin el correo citado):\n${cuerpo.slice(0, 8000)}`,
+        `Respuesta de la persona (sin el correo citado):\n${cuerpo.slice(0, 8000) || "(vacía: solo saludo/firma o solo anotaciones en la tabla citada)"}`,
+        "",
+        `Correo citado (la tabla que se le envió; mira si hay anotaciones de la persona junto a cada fila):\n${citado.slice(0, 6000) || "(sin texto citado)"}`,
       ].join("\n"),
     }],
   });
@@ -265,12 +279,12 @@ export function extraerListaCargos(entrada: unknown): Array<Record<string, unkno
 }
 
 /** Un reintento: una respuesta mal formada del modelo no debe dejar la respuesta del correo sin análisis por cargo. */
-async function interpretar(cargos: CargoCorreo[], cuerpo: string, adjuntos: Array<{ nombre: string; resumen: string }>): Promise<InterpretacionCargo[]> {
+async function interpretar(cargos: CargoCorreo[], cuerpo: string, adjuntos: Array<{ nombre: string; resumen: string }>, citado = ""): Promise<InterpretacionCargo[]> {
   try {
-    return await interpretarUnaVez(cargos, cuerpo, adjuntos);
+    return await interpretarUnaVez(cargos, cuerpo, adjuntos, citado);
   } catch (error) {
     console.error("[respuestaSoportes] Interpretación fallida, se reintenta una vez:", error instanceof Error ? error.message : error);
-    return interpretarUnaVez(cargos, cuerpo, adjuntos);
+    return interpretarUnaVez(cargos, cuerpo, adjuntos, citado);
   }
 }
 
@@ -358,8 +372,9 @@ export async function analizarRespuestaDeSoportes(correo: CorreoResumen, cuerpoC
 
   const cargos = [...solicitud.cargos].sort((a, b) => a.fecha.localeCompare(b.fecha));
   const cuerpo = limpiarCuerpoSinCitas(cuerpoCompleto);
+  const citado = extraerCuerpoCitado(cuerpoCompleto);
   const adjuntos = await leerAdjuntos(correo, asunto.empresa);
-  const interpretaciones = await interpretar(cargos, cuerpo, adjuntos.map((a) => ({ nombre: a.nombre, resumen: a.esGasto ? `comprobante de gasto: ${[a.proveedor, a.monto, a.moneda, a.fecha].filter((x) => x !== undefined && x !== "").join(" ")}` : (a.descripcion ?? "no es un comprobante") })));
+  const interpretaciones = await interpretar(cargos, cuerpo, adjuntos.map((a) => ({ nombre: a.nombre, resumen: a.esGasto ? `comprobante de gasto: ${[a.proveedor, a.monto, a.moneda, a.fecha].filter((x) => x !== undefined && x !== "").join(" ")}` : (a.descripcion ?? "no es un comprobante") })), citado);
 
   let movimientos: MovimientoSimple[] = [];
   try {
