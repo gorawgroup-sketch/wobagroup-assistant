@@ -120,3 +120,13 @@ test("las facturas enlazadas en el cuerpo solo se verifican en la rama SIN adjun
   const guardaVerificado = bloque.lastIndexOf("if (verificacionEnlazadas.verificado)", asignacion);
   assert.ok(asignacion > 0 && guardaVerificado > 0 && asignacion - guardaVerificado < 120);
 });
+
+// «Vuelve a proponerlo» (Carlos, 2026-10-14): un correo descartado solo se reabre levantando el descarte ANTES de procesarlo.
+test("la búsqueda puntual con volverAProponer retira el descarte del operador antes de procesar el correo", async () => {
+  const fuente = await readFile(join(process.cwd(), "core/jobs/revisarCorreoNuevo.ts"), "utf8");
+  const puntual = fuente.slice(fuente.indexOf("async function procesarCorreoPuntualInterno"), fuente.indexOf("Señal genérica de"));
+  const retirar = puntual.indexOf("retirarGastoDescartadoPorOperador(correo.id)");
+  assert.ok(retirar >= 0, "debe levantar el descarte");
+  assert.ok(puntual.slice(0, retirar).includes("opciones.volverAProponer"), "solo cuando el operador lo pide");
+  assert.ok(retirar < puntual.indexOf("await procesarCorreoLocalizado(chatId, correo, false);"), "antes de procesar");
+});

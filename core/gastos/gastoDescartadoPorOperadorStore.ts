@@ -37,6 +37,19 @@ async function purgarVencidos(): Promise<void> {
   for (const fila of vencidas) await eliminarFila(TAB_NAME, fila.rowIndex, HEADERS);
 }
 
+/**
+ * Reabre un correo descartado: borra TODOS sus descartes (adjuntos y cuerpo) para que la siguiente revisión vuelva a
+ * proponerlo. Caso real (Carlos, 2026-10-14): descartó la propuesta de la tasa turística de 8 € para reprocesar el correo
+ * con el buscador corregido, y el reproceso respondía «ya lo descartaste tú antes» sin ninguna forma de levantarlo.
+ * Devuelve cuántos descartes se retiraron.
+ */
+export async function retirarGastoDescartadoPorOperador(mensajeIdGmail: string): Promise<number> {
+  if (!mensajeIdGmail) return 0;
+  const filas = (await leerFilas(TAB_NAME, NUM_COLS, HEADERS)).filter((f) => f.valores[0] === mensajeIdGmail).sort((a, b) => b.rowIndex - a.rowIndex);
+  for (const fila of filas) await eliminarFila(TAB_NAME, fila.rowIndex, HEADERS);
+  return filas.length;
+}
+
 /** El descarte del operador para este correo y adjunto ("" = cuerpo), si existe y sigue vigente. */
 export async function gastoDescartadoPorOperador(
   mensajeIdGmail: string, attachmentId: string | undefined
