@@ -544,6 +544,14 @@ Al terminar el dictado, revisa el texto y pulsa Consultar. Puedes editar nombres
 
 Un borrador sin enviar muestra Corregir texto y Cancelar y empezar de nuevo, junto a Enviar a WOBi en Telegram. Corregir cancela primero el borrador en el servidor y devuelve el texto al campo editable. Si la cancelación no se confirma, se mantiene la referencia y se consulta el estado. Una solicitud ya recibida o en ejecución no se presenta como cancelada.
 
+## Preguntas de datos cuyo dato ya se pidió al creador
+
+Cuando un gasto de correo espera un dato (fecha, moneda, comercio, empresa) y ese dato **ya se le pidió a quien envió el comprobante** (`solicitar_datos_faltantes_a_creadores`, registro en `_solicitudes_datos_gasto`), la cola de revisión no se detiene a esperar al operador: el correo queda aparcado («el dato que falta ya se le pidió a X; queda en espera de su respuesta») y la revisión sigue con el siguiente. La pregunta sigue viva: se resuelve con la respuesta del creador (su correo entra por la cola) o contestando por chat. (Carlos, 14-10-2026, caso Kelly / Crepes & Waffles.)
+
+## Avisos de la regla de tickets
+
+En modo activo el aviso dice qué va a pasar y que no hace falta hacer nada («se convertirán solos en cuanto estén conciliados y con comprobante; te avisaré de cada conversión»), y cada conversión real se comunica («✅ Convertidos a ticket en Holded: …»). Solo los gastos que la regla no puede decidir llegan con botones.
+
 ## Operación desde el servidor (puntos `/admin/*`)
 
 Para que quien opera el sistema resuelva un caso sin pedirle a Carlos que escriba comandos y sin ejecutar flujos de archivos

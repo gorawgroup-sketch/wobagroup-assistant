@@ -623,7 +623,10 @@ async function sincronizarColaCorreo(
     let activo = await obtenerActivoActual(chatId).catch(() => undefined);
     // Si el dato que falta ya se le pidió al creador del gasto, la cola no espera al operador: el correo queda aparcado
     // hasta que el creador responda y se sigue con el siguiente (Carlos, 14-10-2026, caso Kelly / Crepes & Waffles).
-    if (activo && await aparcarActivoSiEsperaAlCreador(chatId, activo)) activo = await obtenerActivoActual(chatId).catch(() => undefined);
+    if (activo && await aparcarActivoSiEsperaAlCreador(chatId, activo)) {
+      try { activo = await obtenerActivoActual(chatId); }
+      catch (error) { console.error("[revisarCorreoNuevo] No se pudo releer el correo activo tras aparcar el anterior:", error instanceof Error ? error.message : error); }
+    }
     if (activo) {
       return { correosRevisados: nuevos, activoBloqueando: { asunto: activo.asunto, de: activo.de }, informePublicado };
     }
@@ -1649,7 +1652,7 @@ export async function aparcarActivoSiEsperaAlCreador(chatId: number, activo: Ite
   if (avanzado) {
     await sendTelegramMessage(chatId,
       `⏸️ "${activo.asunto}": el dato que falta ya se le pidió a ${creador}. Queda en espera de su respuesta y la cola sigue con el siguiente correo; ` +
-      "no tienes que hacer nada.").catch(() => undefined);
+      "no tienes que hacer nada.").catch((error) => console.error("[revisarCorreoNuevo] No se pudo avisar del correo aparcado:", error instanceof Error ? error.message : error));
   }
   return avanzado;
 }
