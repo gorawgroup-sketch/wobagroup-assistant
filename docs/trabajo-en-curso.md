@@ -110,7 +110,7 @@ Voz Marin: Codex, `codex/voz-marin`, Cerebro/audio. PR #463 fusionado; b908bc2 d
 | Pedir soportes a quien gastó con la tarjeta: CSV de Revolut → resumen por persona → un correo por titular (cuadro + enlace a su hoja de Google compartida, direcciones del buzón, regla fija en el prompt) | #370, #371, #372, #373 | 06/07-10-2026 |
 | `/preguntas` con un botón por pendiente y búsqueda tolerante | #374, #376 | 06-10-2026 |
 | Casa Peppe: tasa COP robusta, teclado en el mensaje pulsado, tasas en paralelo | #375, #377 | 06-10-2026 |
-| Proveedor recurrente (Anthropic 13/10): un cargo conciliado de otra fecha ya no bloquea como «posible duplicado» (solo ≤2 días); botones de la verificación con rótulos que dicen qué hacen | #PR | 14-10-2026 |
+| Proveedor recurrente (Anthropic 13/10): un cargo conciliado de otra fecha ya no bloquea como «posible duplicado» (solo ≤2 días); botones de la verificación con rótulos que dicen qué hacen | #503 | 14-10-2026 |
 | Respuesta a la solicitud de soportes: lectura completa y una acción por cargo | #378 | 07-10-2026 |
 | Cerrar cargos sin soporte (par cargo+reembolso sin gasto; gasto sin soporte conciliado) | #379 | 07-10-2026 |
 | Lectura de la cadena del correo, paso 1: remitente real, mensaje nuevo sin citas ni firma, sin recorte de 8.000 caracteres (`core/correo/lectura/`) | #383 | 07-10-2026 |
