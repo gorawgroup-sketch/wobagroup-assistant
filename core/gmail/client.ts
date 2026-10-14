@@ -375,6 +375,16 @@ export async function obtenerHiloCompleto(threadId: string): Promise<{
  * de verdad en la cola. undefined si el hilo no tiene mensajes (no debería
  * pasar en la práctica).
  */
+/** Ids de todos los mensajes de un hilo, del más antiguo al más reciente (solo metadatos). */
+export async function listarMensajesDeHilo(threadId: string): Promise<Array<{ id: string; fecha: string }>> {
+  const gmail = getGmailClient();
+  const res = await gmail.users.threads.get({ userId: "me", id: threadId, format: "metadata", metadataHeaders: ["Date"] });
+  return (res.data.messages ?? [])
+    .filter((m): m is typeof m & { id: string } => Boolean(m.id))
+    .map((m) => ({ id: m.id, fecha: m.internalDate ? new Date(Number(m.internalDate)).toISOString() : "" }))
+    .sort((a, b) => Date.parse(a.fecha || 0 as never) - Date.parse(b.fecha || 0 as never));
+}
+
 export async function obtenerUltimoMensajeDeHilo(
   threadId: string
 ): Promise<{ messageId: string; fecha: string; fechaPrimerNoLeido: string; de: string; asunto: string } | undefined> {

@@ -58,6 +58,7 @@ import { revalidarRegistroRecienteDeCorreo } from "../gastos/verificarGastoPorCo
 import { yaSeArchivoDesdeCorreo } from "../documental/documentoArchivadoPorCorreoStore";
 import { obtenerPropuestasClasificacionPorChat } from "../documental/classificationStore";
 import { gastoDescartadoPorOperador, retirarGastoDescartadoPorOperador } from "../gastos/gastoDescartadoPorOperadorStore";
+import { mensajeDelHiloConAdjuntosPendientes } from "../gmail/mensajeConAdjuntosDelHilo";
 import { obtenerGastosPendienteDatosPorChat } from "../gastos/gastoPendienteDatosStore";
 import { pendientesYaSolicitados } from "../gastos/datosFaltantes/solicitudDatosStore";
 import { describirGastoRegistrado } from "../gastos/describirGastoRegistrado";
@@ -674,6 +675,21 @@ async function procesarCorreoLocalizado(
     threadId: correo.threadId,
     mensajeId: correo.id,
   };
+
+  // Leer el correo completo incluye los adjuntos de los mensajes ANTERIORES del hilo: si el último no trae adjuntos y uno
+  // anterior trae un comprobante sin procesar, se procesa ese mensaje (la identidad de la cola sigue siendo la del hilo).
+  // Caso real RODOAR 14-10-2026 (ver core/gmail/mensajeConAdjuntosDelHilo.ts). Un fallo deja el comportamiento de siempre.
+  if (!opciones.soloArchivar) {
+    try {
+      const anterior = await mensajeDelHiloConAdjuntosPendientes(correo);
+      if (anterior) {
+        console.log("[revisarCorreoNuevo] El último mensaje del hilo no trae adjuntos; se procesa el anterior con adjuntos pendientes:", { hilo: correo.threadId, ultimo: correo.id, elegido: anterior.id, adjuntos: anterior.adjuntos.map((a) => a.filename) });
+        correo = anterior;
+      }
+    } catch (error) {
+      console.error("[revisarCorreoNuevo] No se pudieron revisar los mensajes anteriores del hilo (se sigue con el último):", error instanceof Error ? error.message : error);
+    }
+  }
 
   // No crítico — nunca debe bloquear el procesamiento real del correo.
   registrarPersonaDesdeCorreo(correo.de, "correo_entrante").catch((error) =>
