@@ -75,7 +75,10 @@ export class HoldedAuto {
     private readonly empresas: EmpresaAuto[] = ["WOBA", "EWORKS", "Footprint"],
     private readonly flujoExistente?: FlujoGastoExistente,
     private readonly renderizarComprobante: typeof generarComprobantePDF = generarComprobantePDF,
-    private readonly obtenerTasaCambio: typeof obtenerTasaCambioHistorica = obtenerTasaCambioHistorica) {}
+    private readonly obtenerTasaCambio: typeof obtenerTasaCambioHistorica = obtenerTasaCambioHistorica,
+    /** Fila del registro durable de creaciones de compra por clave (inyectable en pruebas; por defecto, el almacén real). */
+    private readonly registroCreacionPorClave: (clave: string) => Promise<{ holdedPurchaseId?: string } | undefined> =
+      async (clave) => (await durablePurchaseStore.obtener(clave)) ?? undefined) {}
 
   /** Reutiliza el listado bancario ya descargado al aplicar las reglas multimoneda del flujo manual. */
   private dependenciasMultimoneda(movimientos: MovimientoAuto[]): DependenciasBusquedaMultimoneda {
@@ -455,7 +458,7 @@ export class HoldedAuto {
   private async registroCreacion(op: OperacionAuto): Promise<{ holdedPurchaseId?: string } | undefined> {
     const p = op.plan;
     const identidad = identidadCreacionCompra(`correo-auto:${op.id}`, p.empresa, p.contactoId, p.recibo.fecha, {});
-    return await durablePurchaseStore.obtener(identidad.clave) ?? undefined;
+    return this.registroCreacionPorClave(identidad.clave);
   }
   private async compra(op: OperacionAuto): Promise<Registro> {
     if (!op.compraId) throw new Error("No hay ID de compra persistido.");
