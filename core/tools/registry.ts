@@ -38,6 +38,7 @@ import { fijarAliasProveedorTool } from "./fijarAliasProveedor";
 import { reintentarGastoPendienteTool, descartarGastoPendienteDatosTool } from "./reintentarGastoPendiente";
 import { prepararDeclaracionSinSoporteTool } from "./prepararDeclaracionSinSoporte";
 import { reenviarDeclaracionSinSoporteTool } from "./reenviarDeclaracionSinSoporte";
+import { aplicarDeclaracionFirmadaTool } from "./aplicarDeclaracionFirmada";
 import { reenviarBotonesPropuestaGastoTool } from "./reenviarBotonesPropuestaGasto";
 import { explicarBusquedaCargoTool } from "./explicarBusquedaCargo";
 import { reclasificarDocumentoPendienteTool, descartarDocumentoPendienteTool } from "./reclasificarDocumentoPendiente";
@@ -120,6 +121,7 @@ const tools: ToolDefinition[] = [
   descartarGastoPendienteDatosTool,
   prepararDeclaracionSinSoporteTool,
   reenviarDeclaracionSinSoporteTool,
+  aplicarDeclaracionFirmadaTool,
   reenviarBotonesPropuestaGastoTool,
   explicarBusquedaCargoTool,
   reclasificarDocumentoPendienteTool,

@@ -26,6 +26,8 @@ export const HERRAMIENTAS_PERMITIDAS: ReadonlySet<string> = new Set([
   "conciliar_movimiento_bancario",
   // Varios cargos para una compra: manda el desglose con «Confirmar conciliación múltiple» / Cancelar; escribe solo el botón.
   "conciliar_multiples_movimientos_bancarios",
+  // Paso C de una declaración firmada: plan con botón «Aplicar» (o cierre si todo estaba conciliado); nunca escribe sola.
+  "aplicar_declaracion_firmada",
 ]);
 
 function secretoValido(recibido: string | undefined, esperado: string): boolean {
