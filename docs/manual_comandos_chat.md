@@ -570,7 +570,7 @@ Para que quien opera el sistema resuelva un caso sin pedirle a Carlos que escrib
 desde un equipo local (la propuesta debe nacer en el servidor, donde viven los archivos y los botones). Todos exigen el
 secreto de administración (`ADMIN_SECRET`, cabecera `x-admin-secret` salvo donde se indique) y ninguno escribe en Holded por sí solo.
 
-- `POST /admin/proponer-accion` `{ "tool", "input" }` (lista permitida en `core/tools/proponerAccionAdmin.ts`; incluye `proponer_envio_correo`, `preparar_declaracion_gastos_sin_soporte` y `conciliar_movimiento_bancario`, que solo proponen con botones) — ejecuta en el chat del superadministrador una herramienta de la lista cerrada
+- `POST /admin/proponer-accion` `{ "tool", "input" }` (lista permitida en `core/tools/proponerAccionAdmin.ts`; incluye `proponer_envio_correo`, `preparar_declaracion_gastos_sin_soporte`, `conciliar_movimiento_bancario` y `conciliar_multiples_movimientos_bancarios`, que solo proponen con botones) — ejecuta en el chat del superadministrador una herramienta de la lista cerrada
   que **solo propone con botones**: `revisar_correo_puntual` (reprocesar un correo concreto; si es el correo activo de la cola,
   responde que ya tiene su propuesta y hay que descartarla primero), `proponer_edicion_compra_holded`, `reenviar_botones_propuesta_gasto`, `proponer_correo_a_audiencia`.
   La escritura la sigue haciendo el botón. (PR #480.)
