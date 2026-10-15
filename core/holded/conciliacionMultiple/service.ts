@@ -3,7 +3,7 @@ import { conMutex } from "../../utils/asyncMutex";
 import type { Empresa } from "../client";
 import {
   claveMovimiento, esDivisaExtranjera, importe, margenResiduoCentimos, mutexConciliacion, reservaActiva, TTL_PLAN, validarCompra, validarReferencia, validarSeleccion,
-  type CompraExacta, type MovimientoExacto, type PlanConciliacion, type PuertoHolded, type ReferenciaMovimiento, type StorePlanes,
+  type CompraExacta, type MovimientoExacto, type OrigenPlan, type PlanConciliacion, type PuertoHolded, type ReferenciaMovimiento, type StorePlanes,
 } from "./model";
 
 function identidadCompra(c: CompraExacta): string {
@@ -37,7 +37,7 @@ function comprobarMovimiento(esperado: MovimientoExacto, actual: MovimientoExact
 export class ServicioConciliacionMultiple {
   constructor(private readonly holded: PuertoHolded, private readonly store: StorePlanes, private readonly ahora = Date.now) {}
 
-  async preparar(datos: { empresa: Empresa; chatId: number; compraId: string; movimientos: ReferenciaMovimiento[]; motivo: string; parcial?: boolean }): Promise<PlanConciliacion> {
+  async preparar(datos: { empresa: Empresa; chatId: number; compraId: string; movimientos: ReferenciaMovimiento[]; motivo: string; parcial?: boolean; origen?: OrigenPlan }): Promise<PlanConciliacion> {
     if (!["WOBA", "EWORKS", "Footprint"].includes(datos.empresa) || !Number.isSafeInteger(datos.chatId)) throw new Error("Empresa o chat inválido.");
     if (!/^[a-zA-Z0-9_-]{1,100}$/.test(datos.compraId)) throw new Error("Identifica la compra por su ID real de Holded.");
     if (!Array.isArray(datos.movimientos) || datos.movimientos.length < 1 || datos.movimientos.length > 20) throw new Error("Selecciona de 1 a 20 movimientos.");
@@ -66,6 +66,7 @@ export class ServicioConciliacionMultiple {
         id: randomUUID().slice(0, 18), empresa: datos.empresa, chatId: datos.chatId, creadoEn: this.ahora(),
         compra, compraInicial: compra, movimientos, motivo: datos.motivo.trim(), estado: "propuesto", verificados: [], pagosVerificados: [],
         ...(datos.parcial === true ? { parcial: true } : {}),
+        ...(datos.origen ? { origen: datos.origen } : {}),
       };
       await this.store.guardar(plan);
       return plan;

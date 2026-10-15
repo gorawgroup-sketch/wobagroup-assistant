@@ -1,3 +1,4 @@
+import type { ConciliacionPlanificada } from "../holded/conciliacionMultiple/model";
 import { propuestaEnMensajePulsado } from "./propuestaMensajePulsado";
 import { botonContinuarConciliacion, continuarCorreoConciliacion } from "./continuarCorreoConciliacion";
 import { posponerCorreoActivoYContinuar } from "../gmail/posponerCorreoActivo";
@@ -898,6 +899,24 @@ async function recuperarConciliacionAntesDeBuscar(empresa: Empresa, gastoId: str
     : "⏳ La operación anterior todavía requiere verificación. No se buscarán ni asignarán otros cargos; verificar solo relee compra y banco." };
 }
 
+/**
+ * Puente entre un gasto recién creado y la conciliación múltiple cuando los cargos ya se conocían al proponerlo (declaración
+ * de gastos sin soporte firmada: un gasto por el total y todos sus cargos). Solo prepara el plan y manda el botón.
+ */
+async function proponerConciliacionPlanificada(empresa: Empresa, gastoId: string, chatId: number, planificada: ConciliacionPlanificada): Promise<ResultadoIntentarConciliar> {
+  try {
+    const { conciliacionMultiple } = await import("../holded/conciliacionMultiple/runtime");
+    const { proponerPlanConciliacionMultiple } = await import("../holded/conciliacionMultiple/proponer");
+    const p = await conciliacionMultiple.preparar({ empresa, chatId, compraId: gastoId, movimientos: planificada.movimientos, motivo: planificada.motivo, ...(planificada.origen ? { origen: planificada.origen } : {}) });
+    await proponerPlanConciliacionMultiple(chatId, p, `🔗 Gasto creado: conciliación con los ${p.movimientos.length} cargo(s) previstos.`);
+    return { nota: `\n\n🔗 Te mandé arriba el desglose de la conciliación con los ${p.movimientos.length} cargo(s) previstos (plan ${p.id}); falta tu botón «Confirmar conciliación múltiple».`, estado: "esperando_eleccion" };
+  } catch (error) {
+    const detalle = error instanceof Error ? error.message : String(error);
+    console.error(`[gastoCallbackHandler] No se pudo preparar la conciliación planificada del gasto ${gastoId}:`, detalle);
+    return { nota: `\n\n⚠️ El gasto queda creado, pero no pude preparar la conciliación con los ${planificada.movimientos.length} cargo(s) previstos (${detalle}). Pide «aplica la declaración firmada» para reintentarla o concíliala a mano.`, estado: "sin_candidato" };
+  }
+}
+
 async function intentarConciliar(
   empresa: Empresa,
   monto: number,
@@ -912,8 +931,11 @@ async function intentarConciliar(
   comprobanteConfirmado: boolean = true,
   threadIdGmail?: string,
   /** Otros nombres del documento (ver ConciliacionPendiente.nombresAlternativos): la conciliación busca igual que la propuesta. */
-  nombresAlternativos?: string[]
+  nombresAlternativos?: string[],
+  /** Cargos ya conocidos al proponer (declaración firmada): se propone el lote múltiple con ellos, sin buscar un cargo suelto. */
+  planificada?: ConciliacionPlanificada
 ): Promise<ResultadoIntentarConciliar> {
+  if (planificada?.movimientos.length) return await proponerConciliacionPlanificada(empresa, gastoId, chatId, planificada);
   try {
     const recuperada = await recuperarConciliacionAntesDeBuscar(empresa, gastoId);
     if (recuperada) return recuperada;
@@ -1915,7 +1937,8 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
           propuesta.correoOrigen?.mensajeIdGmail,
           comprobanteConfirmado,
           propuesta.correoOrigen?.threadId,
-          propuesta.nombresAlternativos
+          propuesta.nombresAlternativos,
+          propuesta.conciliacionPlanificada
         );
         preguntaConciliacionPendiente = resultadoConciliacion.estado === "esperando_eleccion";
         cierreCorreoVerificado = gastoPermiteCerrarCorreo(comprobanteConfirmado, resultadoConciliacion);
@@ -3566,7 +3589,8 @@ async function crearGastoYReportar(
     nombresAlternativos: propuesta.nombresAlternativos,
   };
 
-  if (conciliarInline) {
+  // Con cargos ya previstos (declaración firmada) se concilia siempre en línea: «Crear (sin conciliar)» no deja el lote colgado.
+  if (conciliarInline || propuesta.conciliacionPlanificada) {
     if (movimientoObjetivo) {
       // Hallazgo real de auditoría xhigh: esta es la MISMA clase de ambigüedad
       // real que gasto_conciliar_elegir aprende de (movimientoObjetivo viene
@@ -3608,7 +3632,8 @@ async function crearGastoYReportar(
       propuesta.correoOrigen?.mensajeIdGmail,
       comprobanteConfirmado,
       propuesta.correoOrigen?.threadId,
-      propuesta.nombresAlternativos
+      propuesta.nombresAlternativos,
+      propuesta.conciliacionPlanificada
     );
     return { gastoId: gasto.id, mensaje: `${baseMensaje}${resultadoConciliacion.nota}`, comprobanteConfirmado,
       estadoConciliacion: resultadoConciliacion.estado,

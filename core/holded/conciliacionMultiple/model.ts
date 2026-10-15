@@ -1,6 +1,13 @@
 import type { Empresa } from "../client";
 
 export interface ReferenciaMovimiento { accountId: string; movementId: string; fecha: string }
+/** Quién originó el plan (hoy: una declaración de gastos sin soporte firmada). Al completarse, ese origen se cierra. */
+export interface OrigenPlan { tipo: "declaracion"; id: string }
+/**
+ * Conciliación decidida ANTES de crear la compra (los cargos ya se conocen): viaja con la propuesta de gasto y, al crearse la
+ * compra, se prepara el plan múltiple con estos movimientos en vez de buscar un único cargo por importe y fecha.
+ */
+export interface ConciliacionPlanificada { movimientos: ReferenciaMovimiento[]; motivo: string; origen?: OrigenPlan }
 export interface MovimientoExacto extends ReferenciaMovimiento {
   descripcion: string;
   cuenta: string;
@@ -47,6 +54,7 @@ export interface PlanConciliacion {
   parcial?: boolean;
   /** Cierre del residuo de redondeo de una compra en divisa (pago «Ajustar cambio de divisa», ver write.ts). */
   ajusteCambio?: { estado: string; montoCentimos: number; motivo: string };
+  origen?: OrigenPlan;
 }
 export interface ResultadoCierreResiduo { estado: "sin_residuo" | "aplicado" | "ya_aplicado" | "requiere_revision" | "incierto"; montoCentimos: number; motivo: string }
 export interface PuertoHolded {

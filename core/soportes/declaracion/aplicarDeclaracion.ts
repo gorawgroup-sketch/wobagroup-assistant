@@ -1,73 +1,105 @@
-import { copyFile, mkdir, unlink, writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { descargarArchivoDrive } from "../../drive/client";
 import { procesarGastoEntrante } from "../../gastos/procesarGastoEntrante";
-import { adjuntarComprobanteHolded, verificarDuplicadoGastoEstricto } from "../../holded/write";
+import { normalizarBusqueda } from "../../gastos/reenviarPreguntaPendiente";
+import { buscarComprasPorMonto } from "../../holded/write";
 import type { Empresa } from "../../holded/client";
+import type { ConciliacionPlanificada, PlanConciliacion, ReferenciaMovimiento } from "../../holded/conciliacionMultiple/model";
 import { sendTelegramMessage, sendTelegramMessageWithButtons } from "../../telegram/client";
-import { actualizarDeclaracion, type CargoDeclarado, type Declaracion } from "./declaracionStore";
+import { actualizarDeclaracion, obtenerDeclaracion, type CargoDeclarado, type Declaracion } from "./declaracionStore";
+import { localizarMovimientosDeclarados, type CargoLocalizado } from "./localizarCargos";
 
 /**
- * Paso C del flujo «declaración de gastos sin soporte» (Carlos, 12-10-2026): con la declaración FIRMADA, ese mismo documento
- * pasa a ser el soporte de cada cargo que relaciona, en cualquier empresa y para cualquier persona. Dos situaciones por cargo:
- *  - el gasto YA existe en Holded (compra única localizada por proveedor, importe y fecha) → se le adjunta la declaración;
- *  - no existe → se propone crearlo con la declaración como comprobante, por el mismo camino de siempre (propuesta con
- *    «Crear y conciliar», contacto, duplicados, conciliación), que ya tiene todas las protecciones.
- * Nada se escribe sin el botón «Aplicar»; cada gasto nuevo lleva además su propio botón. Un cargo con varias compras
- * posibles se deja a mano y se dice.
+ * Paso C del flujo «declaración de gastos sin soporte» (Carlos, 12-10 y 15-10-2026): la declaración FIRMADA es el comprobante
+ * de UN SOLO gasto por el valor total de los cargos que relaciona, y TODOS esos cargos del banco se concilian contra ese gasto
+ * (conciliación múltiple, core/holded/conciliacionMultiple). Vale para cualquier persona y empresa.
+ *  - Si el gasto del total ya existe en Holded (p. ej. se creó desde el chat), se propone directamente la conciliación múltiple.
+ *  - Si no existe, se propone crearlo por el camino de siempre (propuesta con botón, contacto, duplicados) llevando ya la
+ *    conciliación planificada: al crearse, el sistema propone el lote con los cargos localizados en vez de buscar un cargo suelto.
+ * Nada se escribe sin botón: «Aplicar» solo prepara; «Crear» y «Confirmar conciliación múltiple» son del superadministrador.
  */
 const UPLOADS_DIR = join(process.cwd(), "tmp", "uploads");
+const DIAS_BUSQUEDA_COMPRA = 120;
 
-export type SituacionCargo = "existente" | "nuevo" | "ambiguo" | "ya_aplicado";
-export interface CargoPlanificado { cargo: CargoDeclarado; situacion: SituacionCargo; compraId?: string; detalle?: string }
-export interface PlanAplicacion { declaracion: Declaracion; cargos: CargoPlanificado[] }
+export interface CompraTotal { id: string; contactName: string; total: number; fecha: string; documentNumber?: string }
+export type AccionPlan = "conciliar_existente" | "crear_y_conciliar" | "ya_resuelta" | "bloqueado";
+export interface PlanAplicacion { declaracion: Declaracion; total: number; moneda: string; compra?: CompraTotal; comprasPosibles: CompraTotal[]; cargos: CargoLocalizado[]; accion: AccionPlan; bloqueos: string[] }
 
-export interface LectorHoldedPlan {
-  compras: (empresa: Empresa, c: CargoDeclarado) => Promise<{ compras: Array<{ id: string; contactName: string; total: number; fecha: string }> }>;
+export interface LectorPlan {
+  compras(empresa: Empresa, d: Declaracion, total: number, moneda: string): Promise<CompraTotal[]>;
+  cargos(empresa: Empresa, cargos: CargoDeclarado[]): Promise<CargoLocalizado[]>;
 }
 
-const lectorReal: LectorHoldedPlan = {
-  compras: (empresa, c) => verificarDuplicadoGastoEstricto(empresa, { proveedor: c.lugar, monto: c.valor, fecha: c.fecha, moneda: c.moneda }),
+export const numeroDocumentoDeclaracion = (d: Pick<Declaracion, "id">): string => `DECL-${d.id}`;
+export const totalDeclarado = (cargos: CargoDeclarado[]): number => Math.round(cargos.reduce((s, c) => s + c.valor, 0) * 100) / 100;
+
+/** La compra del total: por número de documento de la declaración o por el nombre del titular como contacto. */
+export function esCompraDeLaDeclaracion(c: CompraTotal, d: Pick<Declaracion, "id" | "titular">): boolean {
+  if ((c.documentNumber ?? "").trim().toUpperCase() === numeroDocumentoDeclaracion(d).toUpperCase()) return true;
+  const contacto = normalizarBusqueda(c.contactName);
+  const partes = normalizarBusqueda(d.titular).split(/\s+/).filter((x) => x.length >= 3);
+  return partes.length >= 2 && partes.filter((p) => contacto.includes(p)).length >= 2;
+}
+
+const lectorReal: LectorPlan = {
+  compras: async (empresa, d, total, moneda) => {
+    const hoy = new Date().toISOString().slice(0, 10);
+    const compras = await buscarComprasPorMonto(empresa, total, hoy, DIAS_BUSQUEDA_COMPRA, moneda);
+    return compras.filter((c) => esCompraDeLaDeclaracion(c, d)).map((c) => ({ id: c.id, contactName: c.contactName, total: c.total, fecha: c.fecha, documentNumber: c.documentNumber }));
+  },
+  cargos: (empresa, cargos) => localizarMovimientosDeclarados(empresa, cargos),
 };
 
-/** Clasifica cada cargo (lógica pura sobre lo que Holded devuelve). */
-export function clasificarCargo(c: CargoDeclarado, compras: Array<{ id: string; contactName: string; total: number; fecha: string }>): CargoPlanificado {
-  if (c.estadoSoporte === "adjuntado" || c.estadoSoporte === "propuesto") return { cargo: c, situacion: "ya_aplicado", compraId: c.compraId };
-  if (compras.length === 1) return { cargo: c, situacion: "existente", compraId: compras[0].id, detalle: `${compras[0].contactName} · ${compras[0].total} · ${compras[0].fecha}` };
-  if (compras.length > 1) return { cargo: c, situacion: "ambiguo", detalle: compras.map((x) => `${x.contactName} ${x.total} ${x.fecha}`).join(" / ") };
-  return { cargo: c, situacion: "nuevo" };
+/** Lógica pura: qué toca hacer con lo que devolvieron Holded y el banco. */
+export function decidirAccion(compras: CompraTotal[], cargos: CargoLocalizado[]): { accion: AccionPlan; bloqueos: string[] } {
+  const bloqueos: string[] = [];
+  if (compras.length > 1) bloqueos.push(`hay ${compras.length} compras posibles del total en Holded (${compras.map((c) => `${c.contactName} ${c.fecha} ${c.documentNumber ?? "sin número"}`).join(" / ")}): dime cuál es`);
+  for (const x of cargos) if (x.situacion === "no_encontrado" || x.situacion === "ambiguo") bloqueos.push(`${x.cargo.fecha} · ${x.cargo.lugar} · ${x.cargo.valor.toFixed(2)} ${x.cargo.moneda}: ${x.situacion === "ambiguo" ? "varios cargos posibles" : "sin cargo en el banco"} (${x.detalle ?? ""})`);
+  if (bloqueos.length) return { accion: "bloqueado", bloqueos };
+  if (compras.length === 1 && cargos.every((x) => x.situacion === "ya_conciliado")) return { accion: "ya_resuelta", bloqueos };
+  if (cargos.some((x) => x.situacion === "ya_conciliado")) return { accion: "bloqueado", bloqueos: cargos.filter((x) => x.situacion === "ya_conciliado").map((x) => `${x.cargo.fecha} · ${x.cargo.lugar} · ${x.cargo.valor.toFixed(2)}: ${x.detalle ?? "ya conciliado"}`) };
+  return { accion: compras.length === 1 ? "conciliar_existente" : "crear_y_conciliar", bloqueos };
 }
 
-export async function planificarAplicacion(d: Declaracion, lector: LectorHoldedPlan = lectorReal): Promise<PlanAplicacion> {
-  const cargos: CargoPlanificado[] = [];
-  for (const c of d.cargos) {
-    if (c.estadoSoporte === "adjuntado" || c.estadoSoporte === "propuesto") { cargos.push(clasificarCargo(c, [])); continue; }
-    const { compras } = await lector.compras(d.empresa as Empresa, c);
-    cargos.push(clasificarCargo(c, compras));
-  }
-  return { declaracion: d, cargos };
+export async function planificarAplicacion(d: Declaracion, lector: LectorPlan = lectorReal): Promise<PlanAplicacion> {
+  const moneda = (d.cargos[0]?.moneda ?? "EUR").toUpperCase();
+  const total = totalDeclarado(d.cargos);
+  const [compras, cargos] = await Promise.all([lector.compras(d.empresa as Empresa, d, total, moneda), lector.cargos(d.empresa as Empresa, d.cargos)]);
+  const { accion, bloqueos } = decidirAccion(compras, cargos);
+  return { declaracion: d, total, moneda, compra: compras.length === 1 ? compras[0] : undefined, comprasPosibles: compras, cargos, accion, bloqueos };
 }
 
 export function textoPlan(p: PlanAplicacion): string {
-  const n = (s: SituacionCargo) => p.cargos.filter((x) => x.situacion === s);
-  const linea = (x: CargoPlanificado) => `  • ${x.cargo.fecha} · ${x.cargo.lugar} · ${x.cargo.valor.toFixed(2)} ${x.cargo.moneda}${x.detalle ? ` → ${x.detalle}` : ""}`;
-  const partes = [`📎 Declaración firmada de ${p.declaracion.titular} (${p.declaracion.empresa}): soporte para ${p.declaracion.cargos.length} cargo(s).`];
-  if (n("existente").length) partes.push(`Ya registrados en Holded (se les adjunta la declaración): ${n("existente").length}`, ...n("existente").map(linea));
-  if (n("nuevo").length) partes.push(`Sin gasto en Holded (se propone crearlos con la declaración como comprobante, cada uno con su botón): ${n("nuevo").length}`, ...n("nuevo").map(linea));
-  if (n("ambiguo").length) partes.push(`Con varias compras posibles (los dejo a mano): ${n("ambiguo").length}`, ...n("ambiguo").map(linea));
-  if (n("ya_aplicado").length) partes.push(`Ya aplicados antes: ${n("ya_aplicado").length}`);
+  const linea = (x: CargoLocalizado) => `  • ${x.cargo.fecha} · ${x.cargo.lugar} · ${x.cargo.valor.toFixed(2)} ${x.cargo.moneda}` +
+    (x.movimiento ? ` → banco ${x.movimiento.fecha} «${x.movimiento.descripcion}» (${x.movimiento.cuenta})` : "") + (x.situacion === "ya_conciliado" ? " · ya conciliado" : "");
+  const partes = [`📎 Declaración firmada de ${p.declaracion.titular} (${p.declaracion.empresa}): un solo gasto de ${p.total.toFixed(2)} ${p.moneda} por ${p.declaracion.cargos.length} cargo(s), con la declaración como comprobante.`];
+  partes.push(p.compra ? `Gasto del total: ya existe en Holded (${p.compra.contactName} · ${p.compra.total.toFixed(2)} · ${p.compra.fecha}${p.compra.documentNumber ? ` · ${p.compra.documentNumber}` : ""}).` : "Gasto del total: no existe en Holded, se propone crearlo.");
+  partes.push("Cargos en el banco:", ...p.cargos.map(linea));
+  if (p.bloqueos.length) partes.push("No se puede aplicar todavía:", ...p.bloqueos.map((b) => `  ⚠️ ${b}`));
   return partes.join("\n");
 }
 
+const referencias = (cargos: CargoLocalizado[]): ReferenciaMovimiento[] => cargos.map((x) => ({ accountId: x.movimiento!.accountId, movementId: x.movimiento!.movementId, fecha: x.movimiento!.fecha }));
+const motivoPlan = (d: Declaracion, total: number, moneda: string): string =>
+  `Declaración de gastos sin soporte firmada por ${d.titular} (${d.empresa}, ${d.nombreArchivo}): sus ${d.cargos.length} cargo(s) suman ${total.toFixed(2)} ${moneda}, el total del gasto.`.slice(0, 500);
+
 export async function proponerAplicacion(chatId: number, d: Declaracion): Promise<void> {
   const plan = await planificarAplicacion(d);
-  const accionables = plan.cargos.filter((x) => x.situacion === "existente" || x.situacion === "nuevo");
-  if (!accionables.length) {
-    await sendTelegramMessage(chatId, `${textoPlan(plan)}\n\nNo hay nada que aplicar automáticamente.`);
+  if (plan.accion === "ya_resuelta") {
+    await marcarAplicada(d, plan.compra!.id, plan.cargos, "adjuntado", "todos los cargos ya estaban conciliados con el gasto del total");
+    await sendTelegramMessage(chatId, `${textoPlan(plan)}\n\n✅ Todo estaba ya hecho: la declaración queda marcada como aplicada.`);
     return;
   }
-  await sendTelegramMessageWithButtons(chatId, `${textoPlan(plan)}\n\n¿Aplico? Adjunto la declaración a los ya registrados y te propongo los nuevos con sus botones.`, [
-    [{ text: `✅ Aplicar como soporte (${accionables.length})`, callback_data: `decl_aplicar:${d.id}` }],
+  if (plan.accion === "bloqueado") {
+    await sendTelegramMessage(chatId, `${textoPlan(plan)}\n\nCuando el banco esté sincronizado o me digas cuál es, pide «aplica la declaración firmada de ${d.titular}».`);
+    return;
+  }
+  const etiqueta = plan.accion === "conciliar_existente"
+    ? `✅ Aplicar: conciliar los ${plan.cargos.length} cargos con el gasto`
+    : `✅ Aplicar: crear el gasto de ${plan.total.toFixed(2)} y conciliar ${plan.cargos.length} cargos`;
+  await sendTelegramMessageWithButtons(chatId, `${textoPlan(plan)}\n\n¿Aplico? ${plan.accion === "conciliar_existente" ? "Te mando el desglose de la conciliación múltiple con su botón." : "Te propongo el gasto con su botón; al crearlo, te mando la conciliación múltiple con los cargos."}`, [
+    [{ text: etiqueta, callback_data: `decl_aplicar:${d.id}` }],
     [{ text: "⏸️ Ahora no", callback_data: `decl_noaplicar:${d.id}` }],
   ]);
 }
@@ -82,51 +114,57 @@ async function descargarFirmada(d: Declaracion): Promise<{ rutaLocal: string; no
   return { rutaLocal, nombre: a.name, mimeType: a.mimeType };
 }
 
-export interface ResultadoAplicacion { adjuntados: number; propuestos: number; fallos: string[] }
+async function marcarAplicada(d: Declaracion, compraId: string, cargos: CargoLocalizado[], estadoSoporte: "adjuntado" | "propuesto", nota: string): Promise<void> {
+  const marcados = d.cargos.map((c) => { const x = cargos.find((y) => y.cargo.id === c.id); return { ...c, estadoSoporte, compraId, ...(x?.movimiento ? { movimiento: { accountId: x.movimiento.accountId, movementId: x.movimiento.movementId, fecha: x.movimiento.fecha } } : {}) }; });
+  await actualizarDeclaracion(d.id, { cargos: marcados, estado: estadoSoporte === "adjuntado" ? "aplicada" : d.estado, nota: `${d.nota ? `${d.nota} ` : ""}[${new Date().toISOString().slice(0, 10)}: ${nota}]` });
+}
 
-/** Ejecuta el plan tras el botón «Aplicar»: adjunta a los existentes y propone los nuevos; actualiza el estado por cargo. */
+export type ResultadoAplicacion =
+  | { modo: "conciliacion_propuesta"; planId: string; cargos: number }
+  | { modo: "gasto_propuesto"; cargos: number; salida: string }
+  | { modo: "ya_resuelta" }
+  | { modo: "bloqueado"; bloqueos: string[] };
+
+/** Ejecuta el plan tras el botón «Aplicar»: prepara la conciliación múltiple o propone el gasto único con ella planificada. */
 export async function aplicarDeclaracion(chatId: number, d: Declaracion): Promise<ResultadoAplicacion> {
   const plan = await planificarAplicacion(d);
-  const firmada = await descargarFirmada(d);
-  const resultado: ResultadoAplicacion = { adjuntados: 0, propuestos: 0, fallos: [] };
-  const cargos = d.cargos.map((c) => ({ ...c }));
-  const marcar = (id: string, cambios: Partial<CargoDeclarado>) => { const i = cargos.findIndex((c) => c.id === id); if (i >= 0) cargos[i] = { ...cargos[i], ...cambios }; };
-  try {
-    for (const x of plan.cargos) {
-      try {
-        if (x.situacion === "existente" && x.compraId) {
-          await adjuntarComprobanteHolded(d.empresa as Empresa, x.compraId, firmada.rutaLocal, firmada.nombre, firmada.mimeType,
-            { idempotencyKey: `declaracion:${d.id}:cargo:${x.cargo.id}:compra:${x.compraId}`, proceso: "declaracion_soporte" });
-          marcar(x.cargo.id, { estadoSoporte: "adjuntado", compraId: x.compraId });
-          resultado.adjuntados++;
-        } else if (x.situacion === "nuevo") {
-          // Copia propia por cargo: el flujo de gasto consume (y borra) el archivo que se le entrega.
-          const copia = join(UPLOADS_DIR, `${Date.now()}_${x.cargo.id}_${firmada.nombre}`);
-          await copyFile(firmada.rutaLocal, copia);
-          const salida = await procesarGastoEntrante({
-            chatId, rutaLocal: copia, nombreArchivoOriginal: firmada.nombre, mimeType: firmada.mimeType,
-            datos: {
-              esFacturaOGasto: true, proveedor: x.cargo.lugar, monto: x.cargo.valor, moneda: x.cargo.moneda, fecha: x.cargo.fecha,
-              concepto: `Gasto sin comprobante · ${x.cargo.lugar} · declarado y firmado por ${d.titular}`, numeroDocumento: `DECL-${d.id}-${x.cargo.id}`,
-              reciboSimplificado: true, lineas: [{ concepto: `Gasto sin comprobante (${x.cargo.lugar})`, base: x.cargo.valor, tipoIvaPct: 0 }],
-              empresaProbable: d.empresa as Empresa, personaAsociada: d.titular, confianza: "alta",
-              razon: `Soporte: declaración de gastos sin soporte firmada por ${d.titular} (${d.nombreArchivo}); cubre ${d.cargos.length} cargo(s).`,
-            },
-          });
-          marcar(x.cargo.id, { estadoSoporte: salida === "propuesta_duplicada" ? "adjuntado" : "propuesto" });
-          resultado.propuestos++;
-        }
-      } catch (error) {
-        const detalle = error instanceof Error ? error.message : String(error);
-        resultado.fallos.push(`${x.cargo.lugar} ${x.cargo.valor.toFixed(2)}: ${detalle}`);
-        console.error(`[declaracion] Fallo aplicando el cargo ${x.cargo.id} de ${d.id}:`, detalle);
-      }
-    }
-  } finally {
-    await unlink(firmada.rutaLocal).catch(() => undefined);
+  if (plan.accion === "bloqueado") return { modo: "bloqueado", bloqueos: plan.bloqueos };
+  if (plan.accion === "ya_resuelta") {
+    await marcarAplicada(d, plan.compra!.id, plan.cargos, "adjuntado", "todos los cargos ya estaban conciliados con el gasto del total");
+    return { modo: "ya_resuelta" };
   }
-  const pendientes = cargos.filter((c) => !c.estadoSoporte);
-  await actualizarDeclaracion(d.id, { cargos, estado: pendientes.length === 0 ? "aplicada" : d.estado,
-    nota: `${d.nota ? `${d.nota} ` : ""}[${new Date().toISOString().slice(0, 10)}: aplicada → ${resultado.adjuntados} adjuntados, ${resultado.propuestos} propuestos${resultado.fallos.length ? `, ${resultado.fallos.length} fallos` : ""}]` });
-  return resultado;
+  const planificada: ConciliacionPlanificada = { movimientos: referencias(plan.cargos), motivo: motivoPlan(d, plan.total, plan.moneda), origen: { tipo: "declaracion", id: d.id } };
+  if (plan.accion === "conciliar_existente") {
+    const { conciliacionMultiple } = await import("../../holded/conciliacionMultiple/runtime");
+    const { proponerPlanConciliacionMultiple } = await import("../../holded/conciliacionMultiple/proponer");
+    const p = await conciliacionMultiple.preparar({ empresa: d.empresa as Empresa, chatId, compraId: plan.compra!.id, ...planificada });
+    await proponerPlanConciliacionMultiple(chatId, p, `📎 Declaración firmada de ${d.titular}: conciliación de sus ${plan.cargos.length} cargo(s) con el gasto del total.`);
+    await marcarAplicada(d, plan.compra!.id, plan.cargos, "propuesto", `conciliación múltiple propuesta (plan ${p.id}) contra la compra ${plan.compra!.id}`);
+    return { modo: "conciliacion_propuesta", planId: p.id, cargos: plan.cargos.length };
+  }
+  const firmada = await descargarFirmada(d);
+  const fecha = [...d.cargos].map((c) => c.fecha).sort().pop() ?? new Date().toISOString().slice(0, 10);
+  const salida = await procesarGastoEntrante({
+    chatId, rutaLocal: firmada.rutaLocal, nombreArchivoOriginal: firmada.nombre, mimeType: firmada.mimeType,
+    datos: {
+      esFacturaOGasto: true, proveedor: d.titular, monto: plan.total, moneda: plan.moneda, fecha, numeroDocumento: numeroDocumentoDeclaracion(d),
+      concepto: `Gastos sin comprobante declarados y firmados por ${d.titular} (${d.cargos.length} cargos)`,
+      reciboSimplificado: true,
+      lineas: d.cargos.map((c) => ({ concepto: `${c.fecha} · ${c.lugar} (sin comprobante)`, base: c.valor, tipoIvaPct: 0 })),
+      empresaProbable: d.empresa as Empresa, personaAsociada: d.titular, confianza: "alta",
+      razon: `Soporte: declaración de gastos sin soporte firmada por ${d.titular} (${d.nombreArchivo}). Al crear el gasto se propone la conciliación con sus ${d.cargos.length} cargo(s) del banco ya localizados.`,
+    },
+    conciliacionPlanificada: planificada,
+  });
+  await marcarAplicada(d, "", plan.cargos, "propuesto", `gasto único de ${plan.total.toFixed(2)} ${plan.moneda} propuesto con la conciliación de ${plan.cargos.length} cargo(s) planificada (${salida})`);
+  return { modo: "gasto_propuesto", cargos: plan.cargos.length, salida };
+}
+
+/** Al completarse un plan múltiple originado por una declaración (botón «Confirmar»), la declaración pasa a «aplicada». */
+export async function registrarPlanCompletadoDeDeclaracion(p: PlanConciliacion): Promise<void> {
+  if (p.origen?.tipo !== "declaracion") return;
+  const d = await obtenerDeclaracion(p.origen.id);
+  if (!d) throw new Error(`No existe la declaración ${p.origen.id}.`);
+  const cargos = d.cargos.map((c) => ({ ...c, estadoSoporte: "adjuntado" as const, compraId: p.compra.id }));
+  await actualizarDeclaracion(d.id, { cargos, estado: "aplicada", nota: `${d.nota ? `${d.nota} ` : ""}[${new Date().toISOString().slice(0, 10)}: plan ${p.id} completado, ${p.movimientos.length} cargo(s) conciliados con la compra ${p.compra.id}]` });
 }

@@ -69,10 +69,13 @@ test("los nombres alternativos del documento sobreviven la ida y vuelta por la f
     nombresAlternativos: ["Queen Home Cinzia"],
   };
   const fila = propuestaToRow(p);
-  assert.equal(fila.length, 32, "la fila cubre las 32 columnas (A…AF)");
+  assert.equal(fila.length, 33, "la fila cubre las 33 columnas (A…AG)");
   assert.deepEqual(rowToPropuesta(fila)?.nombresAlternativos, ["Queen Home Cinzia"]);
   assert.equal(rowToPropuesta(propuestaToRow({ ...p, nombresAlternativos: undefined }))?.nombresAlternativos, undefined);
-  assert.equal(letraColumna(1), "A"); assert.equal(letraColumna(26), "Z"); assert.equal(letraColumna(27), "AA"); assert.equal(letraColumna(32), "AF");
+  const planificada = { movimientos: [{ accountId: "a", movementId: "m", fecha: "2026-09-06" }], motivo: "declaración firmada", origen: { tipo: "declaracion" as const, id: "d1" } };
+  assert.deepEqual(rowToPropuesta(propuestaToRow({ ...p, conciliacionPlanificada: planificada }))?.conciliacionPlanificada, planificada);
+  assert.equal(rowToPropuesta(fila)?.conciliacionPlanificada, undefined);
+  assert.equal(letraColumna(1), "A"); assert.equal(letraColumna(26), "Z"); assert.equal(letraColumna(27), "AA"); assert.equal(letraColumna(32), "AF"); assert.equal(letraColumna(33), "AG");
 
   const fuente = await readFile(join(process.cwd(), "core/gastos/gastoProposalSheet.ts"), "utf8");
   // Rangos de fila completa: empiezan en la columna A (`!A1`, `!A2`, `!A:`, `!A${fila}:`). Nunca con la última letra fija.

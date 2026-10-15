@@ -1,3 +1,4 @@
+import type { ConciliacionPlanificada } from "../holded/conciliacionMultiple/model";
 import { debeOfrecerSoporteDistinto } from "./soporteDistinto";
 import { frenoAvisoPropuesta } from "./avisoPropuestaPendiente";
 import { crearTrazaBusqueda, describirTrazaBusqueda } from "../holded/trazaBusqueda";
@@ -81,6 +82,8 @@ export interface GastoEntrante {
    * guardarlo como conocimiento.
    */
   correoOrigen?: { de: string; asunto: string; threadId: string; messageIdHeader: string; mensajeIdGmail?: string };
+  /** Cargos ya conocidos (declaración firmada): la propuesta los lleva y, al crear la compra, se propone el lote múltiple. */
+  conciliacionPlanificada?: ConciliacionPlanificada;
 }
 
 /**
@@ -1018,6 +1021,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     cuentaTags: tagsFinal,
     personaAsociada: datos.personaAsociada,
     nombresAlternativos: datos.nombresEnDocumento,
+    conciliacionPlanificada: entrada.conciliacionPlanificada,
     deColaCorreo: entrada.deColaCorreo,
     origenAdjuntoGmail: entrada.origenAdjuntoGmail,
     correoOrigen: entrada.correoOrigen,

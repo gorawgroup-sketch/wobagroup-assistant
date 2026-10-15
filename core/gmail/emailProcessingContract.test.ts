@@ -134,7 +134,7 @@ test("la búsqueda puntual con volverAProponer retira el descarte del operador a
 // Cadena completa (Carlos, 14-10): los nombres del documento viajan de la propuesta a la pregunta «¿conciliar?» y a «Sí, conciliar».
 test("los nombres alternativos del documento llegan a la pregunta de conciliación y a la conciliación posterior", async () => {
   const fuente = await readFile(join(process.cwd(), "core/gastos/gastoCallbackHandler.ts"), "utf8");
-  assert.match(fuente, /nombresAlternativos: propuesta\.nombresAlternativos,\n\s*\};\n\n\s*if \(conciliarInline\)/, "datosConciliacionPendiente lleva los nombres");
+  assert.match(fuente, /nombresAlternativos: propuesta\.nombresAlternativos,\n\s*\};\n\n(\s*\/\/[^\n]*\n)*\s*if \(conciliarInline \|\| propuesta\.conciliacionPlanificada\)/, "datosConciliacionPendiente lleva los nombres");
   assert.ok(fuente.includes("pendiente.threadIdGmail,\n      pendiente.nombresAlternativos\n"), "«Sí, conciliar» pasa los nombres de la pendiente");
   assert.match(fuente, /buscarMovimientoSimilar\(empresa, \{ monto, fecha: fechaBusqueda, moneda, proveedor, concepto: conceptoBusqueda, nombresAlternativos \}\)/);
   const store = await readFile(join(process.cwd(), "core/gastos/conciliacionPendienteStore.ts"), "utf8");

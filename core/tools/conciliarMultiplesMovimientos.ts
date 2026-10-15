@@ -2,6 +2,7 @@ import type { Empresa } from "../holded/client";
 import type { ToolDefinition } from "./types";
 import { conciliacionMultiple } from "../holded/conciliacionMultiple/runtime";
 import { resumenPlan, estadoPlan, type ReferenciaMovimiento } from "../holded/conciliacionMultiple/model";
+import { proponerPlanConciliacionMultiple } from "../holded/conciliacionMultiple/proponer";
 
 
 export const conciliarMultiplesMovimientosTool: ToolDefinition = {
@@ -40,15 +41,7 @@ export const conciliarMultiplesMovimientosTool: ToolDefinition = {
         compraId: typeof input.compra_id === "string" ? input.compra_id : "", movimientos: input.movimientos as ReferenciaMovimiento[],
         motivo: typeof input.motivo === "string" ? input.motivo : "", parcial: input.parcial === true });
       planId = p.id;
-      const { sendTelegramMessage, sendTelegramMessageWithButtons } = await import("../telegram/client");
-      const resumen = resumenPlan(p);
-      // Mostrar siempre el desglose completo, incluso cuando excede un mensaje de Telegram.
-      for (let i = 0; i < resumen.length; i += 3000) await sendTelegramMessage(p.chatId, resumen.slice(i, i + 3000));
-      await sendTelegramMessageWithButtons(p.chatId,
-        `Plan ${p.id}: ¿confirmas vincular ${p.movimientos.length === 1 ? "este movimiento" : `estos ${p.movimientos.length} movimientos`} a la compra ${p.compra.numero || p.compra.id}${p.parcial ? " dejando el resto del saldo abierto" : ""}? ` +
-        "Se comprobarán otra vez los datos antes de escribir. Si un paso falla, se detendrá el lote y se informará del avance real.",
-        [[{ text: "Confirmar conciliación múltiple", callback_data: `concilmulti_si:${p.id}` }],
-          [{ text: "Cancelar", callback_data: `concilmulti_no:${p.id}` }]]);
+      await proponerPlanConciliacionMultiple(p.chatId, p);
       return `Plan ${p.id} guardado y desglose enviado para aprobación. No se ha conciliado ni resuelto todavía. La cola de correo debe esperar la resolución real.`;
     } catch (error) {
       return `${planId ? `Plan guardado: ${planId}. ` : ""}No se completó la preparación/envío: ${error instanceof Error ? error.message : String(error)}. No se envió ninguna conciliación a Holded.`;
