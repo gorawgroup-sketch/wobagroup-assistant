@@ -145,3 +145,17 @@ test("porConfirmarHastaDias: al ELEGIR tras «Sí, conciliar», un cargo exacto 
     assert.equal(r[0].compatibilidad, "por_confirmar", "nunca compatible por sí solo: el operador elige con aviso");
   });
 });
+
+test("copia pendiente de un cargo ya conciliado: solo «por confirmar» con aviso de posible duplicado, y la automatización no la ve (Anthropic 08/10)", async () => {
+  const conciliado = mov({ id: "c1", description: "Anthropic", amount: "-21.63", currency: "EUR", accounting_amount: "-21.63", booking_date: "2026-10-08", status: "reconciled", reconciled_amount: "-21.63" });
+  const copia = mov({ id: "c2", description: "Anthropic", amount: "-21.63", currency: "EUR", accounting_amount: "-21.63", booking_date: "2026-10-08", status: "pending" });
+  const c = { monto: 21.63, fecha: "2026-10-08", moneda: "EUR", proveedor: "Anthropic, PBC", concepto: "Suscripción API" };
+  await conHolded([conciliado, copia], async () => {
+    const auto = await buscarMovimientoSimilar("Footprint", c, undefined, sinAprendidas);
+    assert.equal(auto.length, 0, "sin incluirPorConfirmar la copia no se ofrece");
+    const manual = await buscarMovimientoSimilar("Footprint", { ...c, incluirPorConfirmar: true }, undefined, sinAprendidas);
+    assert.equal(manual.length, 1);
+    assert.equal(manual[0].compatibilidad, "por_confirmar");
+    assert.match(manual[0].aviso ?? "", /posible duplicado/);
+  });
+});

@@ -38,6 +38,13 @@ export interface HechosCierre {
    * contable en EUR que Holded da a los cargos de cuentas extranjeras (null si no lo tiene).
    */
   movimiento: { estado: string; importeCentimos: number; conciliadoCentimos: number; contableCentimos: number | null } | null;
+  /**
+   * Solo cuando la operación NO tiene compraId: false = el registro durable de creaciones no tiene ninguna fila para
+   * esta operación, es decir, la escritura en Holded nunca empezó (el registro se reserva ANTES de llamar a Holded);
+   * true = hay registro (la creación pudo llegar a Holded) y hay que seguir buscando la compra. Caso real 14-10-2026:
+   * «309,74 USD - Airbnb Madrid» quedó «incierta, sin compra registrada» y bloqueaba el correo sin salida.
+   */
+  escrituraRegistrada?: boolean;
 }
 
 export type ComprobacionCierre =

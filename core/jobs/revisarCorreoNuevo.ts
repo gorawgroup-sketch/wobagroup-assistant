@@ -58,6 +58,9 @@ import { revalidarRegistroRecienteDeCorreo } from "../gastos/verificarGastoPorCo
 import { yaSeArchivoDesdeCorreo } from "../documental/documentoArchivadoPorCorreoStore";
 import { obtenerPropuestasClasificacionPorChat } from "../documental/classificationStore";
 import { gastoDescartadoPorOperador, retirarGastoDescartadoPorOperador } from "../gastos/gastoDescartadoPorOperadorStore";
+import { mensajeDelHiloConAdjuntosPendientes } from "../gmail/mensajeConAdjuntosDelHilo";
+import { obtenerGastosPendienteDatosPorChat } from "../gastos/gastoPendienteDatosStore";
+import { pendientesYaSolicitados } from "../gastos/datosFaltantes/solicitudDatosStore";
 import { describirGastoRegistrado } from "../gastos/describirGastoRegistrado";
 import { mensajeDeExceso } from "../correo/lectura/proteccionAdjuntos";
 import {
@@ -77,6 +80,7 @@ import {
   reintentarActivoPendienteDeMarcarLeido,
   reencolarActivoParaReintento,
   type IdentidadCorreoCola,
+  type ItemColaCorreo,
 } from "../gmail/colaRevisionStore";
 
 // 48h — mismo criterio que classificationStore.ts (48h) y otras propuestas
@@ -617,7 +621,13 @@ async function sincronizarColaCorreo(
   await publicarResumenSiCorresponde();
 
   if (habiaActivoAntes) {
-    const activo = await obtenerActivoActual(chatId).catch(() => undefined);
+    let activo = await obtenerActivoActual(chatId).catch(() => undefined);
+    // Si el dato que falta ya se le pidió al creador del gasto, la cola no espera al operador: el correo queda aparcado
+    // hasta que el creador responda y se sigue con el siguiente (Carlos, 14-10-2026, caso Kelly / Crepes & Waffles).
+    if (activo && await aparcarActivoSiEsperaAlCreador(chatId, activo)) {
+      try { activo = await obtenerActivoActual(chatId); }
+      catch (error) { console.error("[revisarCorreoNuevo] No se pudo releer el correo activo tras aparcar el anterior:", error instanceof Error ? error.message : error); }
+    }
     if (activo) {
       return { correosRevisados: nuevos, activoBloqueando: { asunto: activo.asunto, de: activo.de }, informePublicado };
     }
@@ -665,6 +675,21 @@ async function procesarCorreoLocalizado(
     threadId: correo.threadId,
     mensajeId: correo.id,
   };
+
+  // Leer el correo completo incluye los adjuntos de los mensajes ANTERIORES del hilo: si el último no trae adjuntos y uno
+  // anterior trae un comprobante sin procesar, se procesa ese mensaje (la identidad de la cola sigue siendo la del hilo).
+  // Caso real RODOAR 14-10-2026 (ver core/gmail/mensajeConAdjuntosDelHilo.ts). Un fallo deja el comportamiento de siempre.
+  if (!opciones.soloArchivar) {
+    try {
+      const anterior = await mensajeDelHiloConAdjuntosPendientes(correo);
+      if (anterior) {
+        console.log("[revisarCorreoNuevo] El último mensaje del hilo no trae adjuntos; se procesa el anterior con adjuntos pendientes:", { hilo: correo.threadId, ultimo: correo.id, elegido: anterior.id, adjuntos: anterior.adjuntos.map((a) => a.filename) });
+        correo = anterior;
+      }
+    } catch (error) {
+      console.error("[revisarCorreoNuevo] No se pudieron revisar los mensajes anteriores del hilo (se sigue con el último):", error instanceof Error ? error.message : error);
+    }
+  }
 
   // No crítico — nunca debe bloquear el procesamiento real del correo.
   registrarPersonaDesdeCorreo(correo.de, "correo_entrante").catch((error) =>
@@ -1626,6 +1651,28 @@ async function procesarCorreoPuntualInterno(
  * confirmación antes de mostrar el siguiente (ver el comentario de
  * handleColaCorreoSiguienteCallback más abajo para el porqué).
  */
+/**
+ * El correo activo está esperando una pregunta de datos (fecha, moneda…) y ese dato YA se le pidió a quien envió el
+ * comprobante (ver core/gastos/datosFaltantes): no hay nada que el operador pueda contestar, así que se aparca el correo
+ * (la pregunta sigue viva para cuando llegue la respuesta) y la cola continúa. Devuelve true si avanzó.
+ */
+export async function aparcarActivoSiEsperaAlCreador(chatId: number, activo: ItemColaCorreo): Promise<boolean> {
+  const pendientes = (await obtenerGastosPendienteDatosPorChat(chatId)).filter((p) =>
+    p.origenAdjuntoGmail?.mensajeIdGmail === activo.mensajeId || p.correoOrigen?.mensajeIdGmail === activo.mensajeId ||
+    p.correoOrigen?.threadId === activo.id);
+  if (!pendientes.length) return false;
+  const solicitados = await pendientesYaSolicitados();
+  if (!pendientes.every((p) => solicitados.has(p.id))) return false;
+  const creador = pendientes[0].correoOrigen?.de?.split("<")[0].trim() || activo.de.split("<")[0].trim() || "quien lo envió";
+  const avanzado = await avanzarColaCorreoSiActivo(chatId, { threadId: activo.id, mensajeId: activo.mensajeId }, `correo:${activo.mensajeId}:espera_creador`);
+  if (avanzado) {
+    await sendTelegramMessage(chatId,
+      `⏸️ "${activo.asunto}": el dato que falta ya se le pidió a ${creador}. Queda en espera de su respuesta y la cola sigue con el siguiente correo; ` +
+      "no tienes que hacer nada.").catch((error) => console.error("[revisarCorreoNuevo] No se pudo avisar del correo aparcado:", error instanceof Error ? error.message : error));
+  }
+  return avanzado;
+}
+
 export async function avanzarColaCorreoSiActivo(
   chatId: number,
   identidadEsperada: IdentidadCorreoCola,

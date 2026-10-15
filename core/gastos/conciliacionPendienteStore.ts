@@ -349,14 +349,21 @@ export async function consumirConciliacionPendiente(id: string): Promise<Concili
   });
 }
 
-/** Repone exactamente la misma pregunta tras un resultado no terminal o un fallo de publicación. */
+/**
+ * Repone la misma pregunta tras un resultado no terminal o un fallo de publicación, con un IDENTIFICADOR NUEVO.
+ * Caso real (Carlos, 2026-10-14, tasa turística 8 €): «Sí, conciliar» no encontró cargo, la pregunta se repuso con el
+ * mismo id en el mismo mensaje y, como la entrega durable de Telegram identifica una pulsación por usuario + mensaje +
+ * callback_data, cada toque posterior respondía «Esta acción ya fue procesada» y el operador quedó bloqueado. Un id nuevo
+ * es una decisión nueva: botones nuevos que sí se atienden. Si la pendiente original sigue viva (no se consumió), se
+ * devuelve tal cual.
+ */
 export async function restaurarConciliacionPendiente(
   pendiente: ConciliacionPendiente
 ): Promise<ConciliacionPendiente> {
   return conMutex(TAB_NAME, async () => {
     const existente = (await leerTodas()).find(({ pendiente: actual }) => actual.id === pendiente.id)?.pendiente;
     if (existente) return existente;
-    const restaurada = { ...pendiente, creadoEn: Date.now() };
+    const restaurada = { ...pendiente, id: randomUUID().slice(0, 8), creadoEn: Date.now() };
     const filaValores = [
       restaurada.id, restaurada.empresa, restaurada.monto, restaurada.fecha,
       restaurada.descripcionGasto, restaurada.chatId, restaurada.creadoEn,

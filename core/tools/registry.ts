@@ -58,6 +58,10 @@ import { informeReintegroGastosTool } from "./informeReintegroGastos";
 import { leerAdjuntosCompraHoldedTool } from "./leerAdjuntosCompraHolded";
 import { revisarCorreoPuntualTool } from "./revisarCorreoPuntual";
 import { proponerCorreoAAudienciaTool } from "./proponerCorreoAAudiencia";
+import { proponerLoteImpuestosCashflowTool } from "./proponerLoteImpuestosCashflow";
+import { leerAdjuntosDeCorreoTool } from "./leerAdjuntosDeCorreo";
+import { seguimientoComunicacionesTool } from "./seguimientoComunicaciones";
+import { solicitarDatosFaltantesTool } from "./solicitarDatosFaltantes";
 import { revisarColaCorreoTool } from "./revisarColaCorreo";
 import { avanzarColaCorreoTool } from "./avanzarColaCorreo";
 import { gestionarContactoAutorespuestaTool } from "./gestionarContactoAutorespuesta";
@@ -139,6 +143,10 @@ const tools: ToolDefinition[] = [
   leerAdjuntosCompraHoldedTool,
   revisarCorreoPuntualTool,
   proponerCorreoAAudienciaTool,
+  proponerLoteImpuestosCashflowTool,
+  leerAdjuntosDeCorreoTool,
+  seguimientoComunicacionesTool,
+  solicitarDatosFaltantesTool,
   revisarColaCorreoTool,
   avanzarColaCorreoTool,
   gestionarContactoAutorespuestaTool,

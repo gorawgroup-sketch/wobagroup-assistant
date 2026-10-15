@@ -1,3 +1,4 @@
+import type { ConciliacionPlanificada } from "../holded/conciliacionMultiple/model";
 import { debeOfrecerSoporteDistinto } from "./soporteDistinto";
 import { frenoAvisoPropuesta } from "./avisoPropuestaPendiente";
 import { crearTrazaBusqueda, describirTrazaBusqueda } from "../holded/trazaBusqueda";
@@ -45,6 +46,8 @@ import type { DatosFactura } from "../documental/extractInvoiceData";
 import type { Empresa } from "../holded/client";
 import { esProveedorNoIdentificado } from "../holded/duplicateSignals";
 import { buscarGastoProcesadoPorIdentidad, registrarGastoDesdeCorreo } from "./gastoPorCorreoStore";
+import { conciliadosCercanosAlComprobante } from "./conciliadosCercanos";
+import { DIAS_MAXIMOS_EXACTO_PREFERIDO, diasEntre, preferirAproximadoDelDia } from "./cargoDelDia";
 import { buscarCompraEnlazadaAlCargo } from "./gastoYaRegistradoPorCargo";
 import { buscarMismaEstanciaRegistrada } from "./mismaEstanciaRegistrada";
 import { calcularHuellaContenido } from "./identidadGasto";
@@ -79,6 +82,8 @@ export interface GastoEntrante {
    * guardarlo como conocimiento.
    */
   correoOrigen?: { de: string; asunto: string; threadId: string; messageIdHeader: string; mensajeIdGmail?: string };
+  /** Cargos ya conocidos (declaración firmada): la propuesta los lleva y, al crear la compra, se propone el lote múltiple. */
+  conciliacionPlanificada?: ConciliacionPlanificada;
 }
 
 /**
@@ -681,6 +686,9 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
   let candidatos: Awaited<ReturnType<typeof verificarDuplicadoGastoEstricto>>["compras"] =
     candidatoRecuperacion ? [candidatoRecuperacion] : [];
   let movimientosYaConciliados: Awaited<ReturnType<typeof verificarDuplicadoGastoEstricto>>["movimientosConciliados"] = [];
+  // Cargos ya previstos (declaración firmada): el gasto es la suma de varios cargos, así que no se busca ni se bloquea por un
+  // cargo suelto del importe total; la conciliación la propone el lote planificado al crear la compra.
+  const buscarCargoSuelto = !entrada.conciliacionPlanificada;
   try {
     if (!candidatoRecuperacion) {
       const verificacion = await verificarDuplicadoGastoEstricto(empresa, {
@@ -691,7 +699,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
         numeroDocumento: datos.numeroDocumento,
       });
       candidatos = verificacion.compras;
-      movimientosYaConciliados = verificacion.movimientosConciliados;
+      movimientosYaConciliados = buscarCargoSuelto ? verificacion.movimientosConciliados : [];
     }
     // Si hay candidatoRecuperacion, la identidad durable ya fija el gasto
     // exacto. Una búsqueda genérica podría ocultarlo (tickets) o reemplazarlo
@@ -734,6 +742,17 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
       proveedor: datos.proveedor, monto: montoParaHolded, moneda: monedaParaHolded, movimientos: movimientosYaConciliados.map((m) => m.movementId ?? m.descripcion),
     });
     movimientosYaConciliados = [];
+  }
+  if (movimientosYaConciliados.length > 0) {
+    // Proveedores recurrentes (Anthropic cada dos días): un cargo conciliado de OTRA fecha no es este recibo. Solo bloquean los
+    // cercanos a la fecha del comprobante; los lejanos se apartan y la búsqueda normal encuentra el cargo libre del día.
+    const { cercanos, lejanos } = conciliadosCercanosAlComprobante(movimientosYaConciliados, datos.fecha);
+    if (lejanos.length) {
+      console.log("[procesarGastoEntrante] Cargos conciliados apartados por fecha lejana al comprobante:", {
+        fechaComprobante: datos.fecha, apartados: lejanos.map((m) => `${m.descripcion} ${m.fecha}`),
+      });
+      movimientosYaConciliados = cercanos;
+    }
   }
   if (movimientosYaConciliados.length > 0) {
     // Caso real (Carlos, 08-10-2026, Anthropic VJCCOFZT-0016): el cargo conciliado puede estar enlazado a ESTE mismo gasto,
@@ -801,8 +820,8 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
             `queda tratado como duplicado y no se habilita “Crear gasto”.`
           : `volver a conciliarlo automáticamente. Wobi no encontró una compra visible asociada mediante la API, por lo que NO afirma que el gasto ` +
             `esté creado: el movimiento puede estar vinculado a un ticket que la API no lista, a otro documento, o tener un estado incoherente. ` +
-            `Abre este movimiento en Holded y revisa qué documento tiene enlazado. Si el vínculo es incorrecto, libéralo allí y dime “ya lo liberé, ` +
-            `reintenta”. El correo seguirá pendiente y sin marcar como leído hasta resolver esa relación.`);
+            `Abre este movimiento en Holded y revisa qué documento tiene enlazado. Si es OTRO cargo (proveedor recurrente), pulsa «Es otro cargo: crear el gasto». ` +
+            `Si el vínculo es incorrecto, libéralo en Holded y pulsa «Volver a comprobar el banco». El correo seguirá pendiente y sin marcar como leído hasta resolver esa relación.`);
 
     if (hayCompraVisible) {
       await sendTelegramMessage(chatId, mensajeMovimientoYaConciliado);
@@ -1005,6 +1024,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     cuentaTags: tagsFinal,
     personaAsociada: datos.personaAsociada,
     nombresAlternativos: datos.nombresEnDocumento,
+    conciliacionPlanificada: entrada.conciliacionPlanificada,
     deColaCorreo: entrada.deColaCorreo,
     origenAdjuntoGmail: entrada.origenAdjuntoGmail,
     correoOrigen: entrada.correoOrigen,
@@ -1178,7 +1198,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     // Si Holded falla a media búsqueda no se puede afirmar «no hay cargo por ese importe»; tampoco se ofrece uno mayor.
     let busquedaCargoCompleta = true;
     try {
-      const candidatosMov = await buscarMovimientoSimilar(
+      const candidatosMov = !buscarCargoSuelto ? [] : await buscarMovimientoSimilar(
         empresa,
         { monto: montoParaHolded, fecha: datos.fecha, moneda: monedaParaHolded, proveedor: datos.proveedor, concepto: datos.concepto, nombresAlternativos: datos.nombresEnDocumento, incluirPorConfirmar: true, traza: trazaBusqueda },
         toleranciaMov
@@ -1186,9 +1206,19 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
       // Un cargo que solo «por confirmar» (nombre distinto) es la última opción: si hay uno aproximado que sí coincide
       // por nombre, gana este último.
       const soloPorConfirmar = candidatosMov.length > 0 && candidatosMov.every((c) => c.compatibilidad === "por_confirmar");
-      const aproximadosPrevios = soloPorConfirmar && !esProveedorNoIdentificado(datos.proveedor)
+      // Proveedor recurrente: exactos de otra fecha frente a un aproximado del mismo día → gana el del día (ver cargoDelDia.ts).
+      const exactosLejanos = candidatosMov.length > 0 && !soloPorConfirmar && candidatosMov.every((m) => diasEntre(m.fecha, datos.fecha) > DIAS_MAXIMOS_EXACTO_PREFERIDO);
+      let aproximadosPrevios = soloPorConfirmar && !esProveedorNoIdentificado(datos.proveedor)
         ? await buscarMovimientoAproximado(empresa, { monto: montoParaHolded, fecha: datos.fecha, moneda: monedaParaHolded, proveedor: datos.proveedor, nombresAlternativos: datos.nombresEnDocumento })
         : [];
+      if (exactosLejanos && !esProveedorNoIdentificado(datos.proveedor)) {
+        const aproximadosDelDia = await buscarMovimientoAproximado(empresa, { monto: montoParaHolded, fecha: datos.fecha, moneda: monedaParaHolded, proveedor: datos.proveedor, nombresAlternativos: datos.nombresEnDocumento });
+        const delDia = preferirAproximadoDelDia(candidatosMov, aproximadosDelDia, datos.fecha);
+        if (delDia) {
+          console.log("[procesarGastoEntrante] Exactos de otra fecha apartados; gana el cargo aproximado del día:", { fecha: datos.fecha, elegido: `${delDia.descripcion} ${delDia.fecha}` });
+          aproximadosPrevios = [delDia];
+        }
+      }
       if (aproximadosPrevios.length > 0) {
         movimientoAproximado = { ...aproximadosPrevios[0], origenCoincidencia: "aproximada" };
         otrosAproximados = aproximadosPrevios.length - 1;
@@ -1207,7 +1237,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
         // inteligencia... para llegar a una CONCLUSIÓN y recomendar un gasto
         // aproximado", pedido explícito — y se avisa que hay otros por si
         // ese no es el correcto.
-        const candidatosAprox = await buscarMovimientoAproximado(empresa, {
+        const candidatosAprox = !buscarCargoSuelto ? [] : await buscarMovimientoAproximado(empresa, {
           monto: montoParaHolded,
           fecha: datos.fecha,
           moneda: monedaParaHolded,
@@ -1232,7 +1262,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     // #N", porque la tasa exacta aplicada por el banco puede incluir spread.
     const otrasMonedas = Array.from(monedasReales).filter((m) => m !== monedaParaHolded);
     let movimientosTipoCambio: Awaited<ReturnType<typeof buscarMovimientosPorTipoCambio>> = [];
-    if (!movimientoBancario && !movimientoAproximado && candidatosMovAmbiguos.length === 0 && otrasMonedas.length > 0) {
+    if (buscarCargoSuelto && !movimientoBancario && !movimientoAproximado && candidatosMovAmbiguos.length === 0 && otrasMonedas.length > 0) {
       try {
         movimientosTipoCambio = await buscarMovimientosPorTipoCambio(
           empresa,
@@ -1258,7 +1288,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     // mal. Solo se prueba cuando la búsqueda normal (exacta y aproximada) ya no encontró nada —
     // nunca reemplaza ni concilia sola, solo avisa para que se confirme antes de crear el gasto.
     let movimientoMonedaAlternativa: Awaited<ReturnType<typeof buscarMovimientoEnMonedaAlternativa>> | undefined;
-    if (!movimientoBancario && !movimientoAproximado && candidatosMovAmbiguos.length === 0 && movimientosTipoCambio.length === 0) {
+    if (buscarCargoSuelto && !movimientoBancario && !movimientoAproximado && candidatosMovAmbiguos.length === 0 && movimientosTipoCambio.length === 0) {
       if (otrasMonedas.length > 0) {
         try {
           movimientoMonedaAlternativa = await buscarMovimientoEnMonedaAlternativa(
@@ -1275,7 +1305,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     // Último recurso (cargoMayor.ts, caso Go Rent A Car): un cargo MAYOR del mismo proveedor del que este gasto puede
     // ser solo una parte. Se ofrece como opción a elegir; nunca se recomienda ni se concilia solo.
     let movimientosCargoMayor: Awaited<ReturnType<typeof buscarCargoMayorDelProveedor>> = [];
-    if (!movimientoBancario && !movimientoAproximado && candidatosMovAmbiguos.length === 0 && movimientosTipoCambio.length === 0 &&
+    if (buscarCargoSuelto && !movimientoBancario && !movimientoAproximado && candidatosMovAmbiguos.length === 0 && movimientosTipoCambio.length === 0 &&
         !movimientoMonedaAlternativa && busquedaCargoCompleta && !esProveedorNoIdentificado(datos.proveedor)) {
       try {
         movimientosCargoMayor = await buscarCargoMayorDelProveedor(
@@ -1317,7 +1347,9 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
         `"${movimientoBancario.descripcion || "(sin descripción)"}" — ${movimientoBancario.monto.toFixed(2)} ${movimientoBancario.moneda}${notaAproximacion} ` +
         `(${movimientoBancario.fecha}). El cargo ya está en el banco, solo falta registrarlo en Compras.` +
         notaOtraMoneda(movimientoBancario) +
-        (movimientoBancario.compatibilidad === "por_confirmar"
+        (movimientoBancario.aviso
+          ? `\n⚠️ ${movimientoBancario.aviso}. Confírmalo antes de aprobar "Crear y conciliar".`
+          : movimientoBancario.compatibilidad === "por_confirmar"
           ? `\n⚠️ El nombre del cargo no coincide con el proveedor ("${datos.proveedor}"): se sugiere solo porque coinciden importe, moneda y fecha. ` +
             `Confírmalo antes de aprobar "Crear y conciliar"; si lo confirmas, Wobi recordará este nombre para la próxima vez.`
           : "")
@@ -1333,7 +1365,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
         : candidatosMovAmbiguos.length > 0
           ? `\n\n💳 Encontré ${candidatosMovAmbiguos.length} movimientos bancarios parecidos, no sé cuál es el correcto:\n` +
             candidatosMovAmbiguos
-              .map((m, i) => `  ${i + 1}. "${m.descripcion || "(sin descripción)"}" — ${m.monto.toFixed(2)} ${m.moneda} (${m.fecha})${m.compatibilidad === "por_confirmar" ? " ⚠️ nombre distinto" : m.compatibilidad === "aprendido" ? " ✔ confirmado antes para este proveedor" : ""}`)
+              .map((m, i) => `  ${i + 1}. "${m.descripcion || "(sin descripción)"}" — ${m.monto.toFixed(2)} ${m.moneda} (${m.fecha})${m.aviso ? ` ⚠️ ${m.aviso}` : m.compatibilidad === "por_confirmar" ? " ⚠️ nombre distinto" : m.compatibilidad === "aprendido" ? " ✔ confirmado antes para este proveedor" : ""}`)
               .join("\n") +
             `\nMarca "🔗 Conciliar con #N" abajo (o "Crear (sin conciliar)" si ninguno es) y aprueba tu selección.`
           : movimientosTipoCambio.length > 0
@@ -1358,6 +1390,8 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
                 { monto: montoParaHolded, moneda: monedaParaHolded, proveedor: datos.proveedor },
                 { hayCorreoOrigen: Boolean(propuesta.correoOrigen) }
               )
+            : entrada.conciliacionPlanificada
+            ? `\n\n🔗 Cargos previstos: ${entrada.conciliacionPlanificada.movimientos.length} (${entrada.conciliacionPlanificada.motivo}). No se busca un cargo suelto por el total: al crear el gasto te mando la conciliación múltiple con esos cargos para que la confirmes.`
             : `\n\n💳 No encontré ningún movimiento bancario sin conciliar que coincida con ${importeTexto}` +
               (!esProveedorNoIdentificado(datos.proveedor)
                 ? " — ni exacto ni aproximado por nombre y monto cercano"

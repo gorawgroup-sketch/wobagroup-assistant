@@ -22,6 +22,7 @@ import { comparteNaturaleza, palabrasNaturalezaGasto } from "./naturalezaConcept
 import { montosCercanos } from "../utils/montos";
 import { mapearConConcurrencia } from "../utils/mapearConConcurrencia";
 import { textosParecidos, palabrasDe } from "../utils/textoParecido";
+import { esCopiaPendienteDeConciliado, firmasConciliadas } from "./duplicadosBancarios";
 import { crearMensajeAnthropic } from "../ai/anthropicGateway";
 import { crearEjecucionIA } from "../ai/policy";
 import { transcribirParaCaptura } from "../documental/transcribeForCapture";
@@ -1753,7 +1754,9 @@ export async function buscarComprasPorMonto(
   monto: number,
   fecha: string,
   ventanaDias = 15,
-  moneda?: string
+  moneda?: string,
+  /** `sinColapsarPorContacto`: devuelve TODAS las compras del importe (por defecto se conserva solo la más reciente de cada contacto). */
+  opciones: { sinColapsarPorContacto?: boolean } = {}
 ): Promise<PurchaseCandidato[]> {
   const fechaBase = new Date(fecha);
   const desde = new Date(fechaBase);
@@ -1773,7 +1776,7 @@ export async function buscarComprasPorMonto(
     if (cursor) params.set("cursor", cursor);
 
     const data = (await holdedWriteCall(empresa, "GET", `/purchases?${params.toString()}`)) as {
-      items?: Array<{ id: string; contact_name?: string; date?: string; total?: string; description?: string; currency?: string }>;
+      items?: Array<{ id: string; contact_name?: string; date?: string; total?: string; description?: string; currency?: string; document_number?: string | null }>;
       cursor?: string;
       has_more?: boolean;
     };
@@ -1784,7 +1787,7 @@ export async function buscarComprasPorMonto(
       const total = parsearMontoHolded(item.total);
       if (!Number.isFinite(total) || !montosCercanos(total, monto, TOLERANCIA_MONTO)) continue;
 
-      const clave = normalizar(item.contact_name);
+      const clave = opciones.sinColapsarPorContacto ? item.id : normalizar(item.contact_name);
       const existente = porProveedor.get(clave);
       if (existente && existente.fecha >= (item.date ?? "")) continue;
 
@@ -1793,6 +1796,7 @@ export async function buscarComprasPorMonto(
         contactName: item.contact_name,
         fecha: item.date ?? "",
         total,
+        documentNumber: item.document_number || undefined,
         descripcion: item.description ?? "",
         moneda: (item.currency ?? moneda ?? "EUR").toUpperCase(),
       });
@@ -5036,6 +5040,8 @@ export interface MovimientoBancarioCandidato {
    * aviso: NUNCA se autoseleccionan ni se concilian sin que el operador elija ese cargo.
    */
   compatibilidad?: "por_confirmar" | "aprendido";
+  /** Advertencia para el operador (p. ej. posible duplicado de la sincronización bancaria). Nunca se concilia solo con aviso. */
+  aviso?: string;
 }
 
 // Hacia ADELANTE: un cargo bancario aparece más tarde que la fecha del
@@ -5354,8 +5360,14 @@ export async function buscarMovimientoSimilar(
         end_date: criterios.fechaExacta ? criterios.fecha : formatDateLocal(hasta),
       }
     ) };
+    const firmasConciliadasCuenta = firmasConciliadas(data.items ?? []);
     for (const mov of data.items ?? []) {
       if (criterios.fechaExacta && (mov.status !== "pending" || Number(mov.reconciled_amount ?? 0) !== 0)) continue;
+      // Copia «pendiente» de un cargo ya conciliado: casi siempre un duplicado de la sincronización, pero dos compras iguales el
+      // mismo día son posibles (Carlos, 14-10-2026): no se descarta en silencio; solo se ofrece «por confirmar» con aviso, nunca se
+      // recomienda ni se concilia sola. La automatización (sin incluirPorConfirmar) no lo ve.
+      const posibleDuplicado = esCopiaPendienteDeConciliado(mov, firmasConciliadasCuenta);
+      if (posibleDuplicado && !criterios.incluirPorConfirmar) continue;
       /** Anota (solo si hay traza) un cargo con el importe buscado y lo que se hizo con él. */
       const anotar = (monto: number, resultado: "ofrecido" | "descartado", motivo: string) => {
         if (!traza || !Number.isFinite(monto) || !montosCercanos(Math.abs(monto), Math.abs(criterios.monto), toleranciaEur)) return;
@@ -5427,8 +5439,13 @@ export async function buscarMovimientoSimilar(
         }
       }
 
-      anotar(monto, "ofrecido", compatibilidad === "por_confirmar" ? "ofrecido por confirmar (nombre distinto)" : compatibilidad === "aprendido" ? "ofrecido (confirmado antes)" : "ofrecido (compatible)");
+      const aviso = posibleDuplicado
+        ? "posible duplicado: en esta cuenta hay otro cargo idéntico (misma descripción, importe y fecha) ya conciliado; comprueba en Holded si son dos compras reales o una copia de la sincronización"
+        : undefined;
+      if (posibleDuplicado) compatibilidad = "por_confirmar";
+      anotar(monto, "ofrecido", posibleDuplicado ? "ofrecido por confirmar (posible duplicado del banco)" : compatibilidad === "por_confirmar" ? "ofrecido por confirmar (nombre distinto)" : compatibilidad === "aprendido" ? "ofrecido (confirmado antes)" : "ofrecido (compatible)");
       candidatos.push({
+        ...(aviso ? { aviso } : {}),
         accountId: cuenta.id,
         movementId: mov.id,
         descripcion: mov.description ?? "",
@@ -5576,8 +5593,10 @@ export async function buscarMovimientoAproximado(
       { start_date: formatDateLocal(desde), end_date: formatDateLocal(hasta) }
     ) };
 
+    const firmasConciliadasCuenta = firmasConciliadas(data.items ?? []);
     for (const mov of data.items ?? []) {
       if (estaConciliado(mov.status) || movimientoAgotadoSalvoRedondeo(mov)) continue;
+      if (esCopiaPendienteDeConciliado(mov, firmasConciliadasCuenta)) continue;
       if (!mov.description || !movimientoCompatibleConGasto(criterios.proveedor, "", mov.description, opcionesNombre)) continue;
       // Su contrato exige «nombre parecido Y monto cercano»: la categoría sola solo vale con la fecha cercana (antes no tenía
       // tope y un restaurante lejano del mismo rubro se conciliaba tras «Sí, conciliar» y reescribía el importe de la compra).
@@ -6181,6 +6200,29 @@ export interface AjusteCambioResidualElegible {
  *
  * Si falta una sola señal, devuelve undefined y no se crea ningún pago.
  */
+/**
+ * Residuo de cambio ENTRE MONEDAS DISTINTAS: el gasto está en una moneda (p. ej. COP) y el cargo salió de una cuenta en otra (USD). El banco cobró y Holded
+ * registró el pago por el importe contable en EUR; al reconvertir a la moneda del gasto con la tasa del documento queda un resto de céntimos. Caso real 2026-10-14
+ * (Uber 23.956 COP, cargo de 7,39 USD): 72,46 COP (≈0,02 €) sin cubrir con el cargo conciliado al 100 %; la conciliación quedaba «incierta» para siempre y el
+ * correo en bucle, porque el ajuste automático de cambio solo existe cuando gasto y cargo comparten moneda. Se tolera (sin escribir nada) un resto de hasta el 2 %
+ * del total y de 1 € como máximo, SOLO si lo pagado + lo pendiente recompone el total del documento.
+ */
+export function residuoCambioToleradoEntreMonedas(
+  compra: Pick<CompraHoldedCruda, "currency" | "currency_change" | "total" | "payments_total" | "payments_pending">,
+  monedaMovimiento: string | undefined
+): boolean {
+  const monedaDoc = (compra.currency || "EUR").toUpperCase().trim();
+  if (!monedaMovimiento || monedaDoc === monedaMovimiento.toUpperCase().trim()) return false;
+  const total = Math.abs(numeroDesdeHolded(compra.total));
+  const pendiente = Math.abs(numeroDesdeHolded(compra.payments_pending));
+  const pagado = Math.abs(numeroDesdeHolded(compra.payments_total));
+  if (![total, pendiente, pagado].every(Number.isFinite) || total <= 0 || pendiente <= 0) return false;
+  const tasa = monedaDoc === "EUR" ? 1 : numeroDecimalPlano(compra.currency_change);
+  if (!Number.isFinite(tasa) || tasa <= 0) return false;
+  if (Math.abs(pagado + pendiente - total) > Math.max(0.02 * tasa, total * 0.005)) return false;
+  return pendiente <= total * 0.02 && pendiente / tasa <= 1;
+}
+
 export function evaluarAjusteCambioResidual(
   compra: Pick<CompraHoldedCruda, "currency" | "currency_change" | "total" | "payments_total" | "payments_pending" | "payments_detail">,
   movimiento: MovimientoParaAjusteCambio,
@@ -6538,6 +6580,9 @@ async function inspeccionarConciliacionRegistrada(
           if (ajusteCambioDivisa && (ajusteCambioDivisa.estado === "aplicado" || ajusteCambioDivisa.estado === "ya_aplicado")) {
             pendienteEnCompra = undefined;
           }
+        } else if (pendienteEnCompra !== undefined && residuoCambioToleradoEntreMonedas(compra, movimiento.currency)) {
+          // Gasto y cargo en monedas distintas: el resto de conversión no es una deuda y no hay ajuste que aplicar (ver residuoCambioToleradoEntreMonedas).
+          pendienteEnCompra = undefined;
         }
       }
     } catch (error) {

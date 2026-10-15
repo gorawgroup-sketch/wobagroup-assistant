@@ -623,9 +623,19 @@ test("leerHechosCierre: solo lee la compra, sus pagos, el comprobante y el movim
   assert.deepEqual(hechos.movimiento, { estado: "reconciled", importeCentimos: 2000, conciliadoCentimos: 0, contableCentimos: 1900 });
 });
 
-test("leerHechosCierre: una operación sin id de compra no inventa una: devuelve vacío sin consultar", async () => {
+test("leerHechosCierre: una operación sin id de compra no inventa una: mira solo el registro durable de creación y no consulta Holded", async () => {
   const e = escenario();
+  (e.adapter as unknown as { registroCreacionPorClave: (clave: string) => Promise<undefined> }).registroCreacionPorClave = async () => undefined;
   const hechos = await e.adapter.leerHechosCierre(e.op);
-  assert.deepEqual(hechos, { compra: null, adjuntos: 0, comprobanteCoincide: null, movimiento: null });
+  // Sin fila en el registro durable la escritura nunca empezó (caso Airbnb 309,74 USD, 14-10-2026): se dice explícitamente.
+  assert.deepEqual(hechos, { compra: null, adjuntos: 0, comprobanteCoincide: null, movimiento: null, escrituraRegistrada: false });
+  assert.deepEqual(e.consultasGet, []);
+});
+
+test("leerHechosCierre: un registro durable en «preparada» (reservado sin llamar a Holded) cuenta como escritura no empezada", async () => {
+  const e = escenario();
+  (e.adapter as unknown as { registroCreacionPorClave: (clave: string) => Promise<{ estado: string }> }).registroCreacionPorClave = async () => ({ estado: "preparada" });
+  const hechos = await e.adapter.leerHechosCierre(e.op);
+  assert.equal(hechos.escrituraRegistrada, false);
   assert.deepEqual(e.consultasGet, []);
 });

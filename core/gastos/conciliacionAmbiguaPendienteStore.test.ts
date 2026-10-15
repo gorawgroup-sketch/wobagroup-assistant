@@ -186,3 +186,9 @@ test("la pregunta normal persiste threadId al final y conserva las columnas lega
   assert.match(fuente, /A2:\$\{ULTIMA_COLUMNA\}10000/);
   assert.doesNotMatch(fuente, /A2:N10000/);
 });
+
+test("una pregunta repuesta recibe un identificador nuevo (botones nuevos que la entrega durable sí atiende)", async () => {
+  const fuente = await readFile(join(process.cwd(), "core/gastos/conciliacionPendienteStore.ts"), "utf8");
+  const restaurar = fuente.slice(fuente.indexOf("export async function restaurarConciliacionPendiente"));
+  assert.match(restaurar, /const restaurada = \{ \.\.\.pendiente, id: randomUUID\(\)\.slice\(0, 8\), creadoEn: Date\.now\(\) \}/);
+});

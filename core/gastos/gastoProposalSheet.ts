@@ -1,3 +1,4 @@
+import type { ConciliacionPlanificada } from "../holded/conciliacionMultiple/model";
 import { leerSheetsConReintento } from "../google/sheetsReadRetry";
 import { randomUUID } from "node:crypto";
 import { google, sheets_v4 } from "googleapis";
@@ -55,6 +56,7 @@ const HEADERS = [
   "ticketDeEquipo",
   "motivoReintento",
   "nombresAlternativosJSON",
+  "conciliacionPlanificadaJSON",
 ];
 
 /** Letra de columna de Sheets (1 → A, 26 → Z, 27 → AA, 32 → AF). */
@@ -69,6 +71,8 @@ export interface PropuestaGasto {
   id: string;
   /** Otros nombres comerciales del documento (alojamiento, local, plataforma) con los que el cargo puede figurar en el banco. */
   nombresAlternativos?: string[];
+  /** Cargos ya conocidos al proponer (declaración firmada): al crear la compra se propone el lote múltiple con ellos. */
+  conciliacionPlanificada?: ConciliacionPlanificada;
   empresa: Empresa;
   proveedor: string;
   monto: number;
@@ -282,6 +286,9 @@ async function ensureTab(): Promise<number> {
     // Migración aditiva: nombresAlternativosJSON (otros nombres del documento para reconocer el cargo) — mismo patrón.
     await sheets.spreadsheets.values.update({ spreadsheetId: sheetId, range: `${TAB_NAME}!AF1`,
       valueInputOption: "RAW", requestBody: { values: [["nombresAlternativosJSON"]] } });
+    // Migración aditiva: conciliacionPlanificadaJSON (cargos ya conocidos al proponer, p. ej. declaración firmada) — mismo patrón.
+    await sheets.spreadsheets.values.update({ spreadsheetId: sheetId, range: `${TAB_NAME}!AG1`,
+      valueInputOption: "RAW", requestBody: { values: [["conciliacionPlanificadaJSON"]] } });
     tabGridId = existingId;
     return tabGridId;
   }
@@ -305,6 +312,18 @@ async function ensureTab(): Promise<number> {
 
   tabGridId = newSheetId;
   return tabGridId;
+}
+
+function planificadaDesdeCelda(celda: unknown): ConciliacionPlanificada | undefined {
+  // Mismo criterio que listaDesdeCelda: una celda ilegible equivale a «sin lote previsto» (el gasto se concilia por el camino normal).
+  let v: unknown;
+  try {
+    v = typeof celda === "string" && celda.trim() ? JSON.parse(celda) : undefined;
+  } catch {
+    v = undefined;
+  }
+  const plan = v as ConciliacionPlanificada | undefined;
+  return Array.isArray(plan?.movimientos) && plan.movimientos.length > 0 ? plan : undefined;
 }
 
 export function rowToPropuesta(row: unknown[]): PropuestaGasto | null {
@@ -401,6 +420,7 @@ export function rowToPropuesta(row: unknown[]): PropuestaGasto | null {
     ticketDeEquipo: row[29] === "" || row[29] == null ? undefined : row[29] === true || row[29] === "true",
     motivoReintento: row[30] ? String(row[30]) : undefined,
     nombresAlternativos: listaDesdeCelda(row[31]),
+    conciliacionPlanificada: planificadaDesdeCelda(row[32]),
   };
 }
 
@@ -449,6 +469,7 @@ export function propuestaToRow(p: PropuestaGasto): (string | number)[] {
     p.ticketDeEquipo === undefined ? "" : p.ticketDeEquipo ? "true" : "false",
     p.motivoReintento ?? "",
     p.nombresAlternativos?.length ? JSON.stringify(p.nombresAlternativos) : "",
+    p.conciliacionPlanificada ? JSON.stringify(p.conciliacionPlanificada) : "",
   ];
 }
 

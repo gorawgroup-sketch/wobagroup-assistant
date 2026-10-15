@@ -144,3 +144,23 @@ test("la clave idempotente cambia si el estado previo del gasto cambió (fecha o
   const claveB = (b.llamadas[0][3] as { idempotencyKey: string }).idempotencyKey;
   assert.notEqual(claveA, claveB);
 });
+
+// Caso real 14-10-2026 (Airbnb México): recibo de 495,13 USD pagado desde la cuenta en USD; Holded contabiliza el cargo por 428,04 €.
+test("gasto y cargo en la misma moneda extranjera: la tasa se alinea al equivalente contable del cargo", async () => {
+  const e = escenario({ total: "495,13", moneda: "USD", tasa: "1.1000", importe: "-495.13", monedaCuenta: "USD" });
+  e.movimiento.accounting_amount = "-428.04";
+  e.elegido.origenCoincidencia = "exacta" as never;
+  const r = await alinearTasaCambioAlMovimientoElegido("Footprint", "g", e.elegido, e.deps);
+  assert.equal(r.estado, "ajustada");
+  if (r.estado !== "ajustada") return;
+  assert.equal(r.tasaNueva, Number((495.13 / 428.04).toFixed(6)));
+  assert.equal(r.montoEur, 428.04);
+  assert.equal(e.llamadas.length, 1);
+});
+
+test("misma moneda extranjera sin equivalente contable: no se toca nada", async () => {
+  const e = escenario({ total: "495,13", moneda: "USD", tasa: "1.1000", importe: "-495.13", monedaCuenta: "USD" });
+  const r = await alinearTasaCambioAlMovimientoElegido("Footprint", "g", e.elegido, e.deps);
+  assert.equal(r.estado, "no_aplica");
+  assert.equal(e.llamadas.length, 0);
+});

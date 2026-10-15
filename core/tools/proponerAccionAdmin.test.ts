@@ -30,7 +30,7 @@ test("solo las herramientas que proponen con botones; nunca una que escriba", as
   const llamadas: Array<{ tool: string; input: unknown; chatId: number }> = [];
   const { srv, post } = await servidor({ llamadas });
   try {
-    for (const tool of ["conciliar_movimiento", "crear_gasto", "enviar_correo", "proponer_envio_correo"]) assert.equal((await post({ tool, input: {} })).status, 400, tool);
+    for (const tool of ["conciliar_movimiento", "crear_gasto", "enviar_correo", "marcar_correo_leido"]) assert.equal((await post({ tool, input: {} })).status, 400, tool);
     assert.equal(llamadas.length, 0);
     const ok = await post({ tool: "proponer_edicion_compra_holded", input: { empresa: "Footprint", compra_id: "6acdf917b4a4326e68069ed0", monto_nuevo: 245.33 } });
     assert.equal(ok.status, 200); assert.deepEqual(llamadas, [{ tool: "proponer_edicion_compra_holded", input: { empresa: "Footprint", compra_id: "6acdf917b4a4326e68069ed0", monto_nuevo: 245.33 }, chatId: 42 }]);
@@ -46,7 +46,7 @@ test("sin superadministrador no se propone nada; sin input válido, 400", async 
 });
 
 test("la lista de herramientas permitidas es cerrada y ninguna es de escritura directa", () => {
-  assert.deepEqual([...HERRAMIENTAS_PERMITIDAS].sort(), ["proponer_correo_a_audiencia", "proponer_edicion_compra_holded", "reenviar_botones_propuesta_gasto", "revisar_correo_puntual"]);
+  assert.deepEqual([...HERRAMIENTAS_PERMITIDAS].sort(), ["conciliar_movimiento_bancario", "conciliar_multiples_movimientos_bancarios", "preparar_declaracion_gastos_sin_soporte", "proponer_correo_a_audiencia", "proponer_edicion_compra_holded", "proponer_envio_correo", "reenviar_botones_propuesta_gasto", "revisar_correo_puntual", "solicitar_datos_faltantes_a_creadores"]);
 });
 
 test("proponer_edicion_compra_holded: compra_id inválido o ni contacto ni id → error sin tocar Holded", async () => {

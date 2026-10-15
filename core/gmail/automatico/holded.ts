@@ -9,6 +9,8 @@ import { candidatosMovimientoAuto, centimosComparablesMovimientoAuto, fechaValid
   VERSION_POLITICA, type CorreoAuto, type EmpresaAuto, type EvidenciaAuto, type MovimientoAuto, type OperacionAuto, type ReciboAuto } from "./model";
 import { mapearConConcurrencia } from "../../utils/mapearConConcurrencia";
 import type { HechosCierre } from "./cierreConEvidencia";
+import { identidadCreacionCompra } from "../../holded/durablePurchase";
+import { durablePurchaseStore } from "../../holded/durablePurchaseStore";
 import { generarComprobantePDF } from "../generarComprobantePDF";
 import type { DatosFactura } from "../../documental/extractInvoiceData";
 import { buscarMovimientosPorTipoCambio, type DependenciasBusquedaMultimoneda } from "../../gastos/movimientoMultimoneda";
@@ -73,7 +75,10 @@ export class HoldedAuto {
     private readonly empresas: EmpresaAuto[] = ["WOBA", "EWORKS", "Footprint"],
     private readonly flujoExistente?: FlujoGastoExistente,
     private readonly renderizarComprobante: typeof generarComprobantePDF = generarComprobantePDF,
-    private readonly obtenerTasaCambio: typeof obtenerTasaCambioHistorica = obtenerTasaCambioHistorica) {}
+    private readonly obtenerTasaCambio: typeof obtenerTasaCambioHistorica = obtenerTasaCambioHistorica,
+    /** Fila del registro durable de creaciones de compra por clave (inyectable en pruebas; por defecto, el almacén real). */
+    private readonly registroCreacionPorClave: (clave: string) => Promise<{ estado?: string; holdedPurchaseId?: string } | undefined> =
+      async (clave) => (await durablePurchaseStore.obtener(clave)) ?? undefined) {}
 
   /** Reutiliza el listado bancario ya descargado al aplicar las reglas multimoneda del flujo manual. */
   private dependenciasMultimoneda(movimientos: MovimientoAuto[]): DependenciasBusquedaMultimoneda {
@@ -449,6 +454,16 @@ export class HoldedAuto {
     e.consultasCompletas = true;
     return e;
   }
+  /** Fila del registro durable de creación de compra de esta operación (misma clave idempotente que `crear`), si existe. */
+  private async registroCreacion(op: OperacionAuto): Promise<{ holdedPurchaseId?: string } | undefined> {
+    const p = op.plan;
+    const identidad = identidadCreacionCompra(`correo-auto:${op.id}`, p.empresa, p.contactoId, p.recibo.fecha, {});
+    const registro = await this.registroCreacionPorClave(identidad.clave);
+    // «preparada» = reservada sin haber llamado a Holded (mismo criterio que consultarCreacionCompraDurable): no empezó.
+    // Caso real 14-10: la operación de Airbnb tenía su fila en «preparada» y seguía bloqueando el correo.
+    if (!registro || registro.estado === "preparada") return undefined;
+    return registro;
+  }
   private async compra(op: OperacionAuto): Promise<Registro> {
     if (!op.compraId) throw new Error("No hay ID de compra persistido.");
     return this.get(op.plan.empresa, `/purchases/${idUrl(op.compraId)}`);
@@ -750,7 +765,13 @@ export class HoldedAuto {
    */
   async leerHechosCierre(op: OperacionAuto): Promise<HechosCierre> {
     const p = op.plan;
-    if (!op.compraId) return { compra: null, adjuntos: 0, comprobanteCoincide: null, movimiento: null };
+    if (!op.compraId) {
+      // Sin compraId la única prueba está en el registro durable de creaciones (se reserva antes de llamar a Holded):
+      // sin fila, la escritura nunca empezó; con fila y compra verificada, se verifica esa compra como si fuera propia.
+      const registro = await this.registroCreacion(op);
+      if (registro?.holdedPurchaseId) return this.leerHechosCierre({ ...op, compraId: registro.holdedPurchaseId });
+      return { compra: null, adjuntos: 0, comprobanteCoincide: null, movimiento: null, escrituraRegistrada: Boolean(registro) };
+    }
     const c = await this.compra(op);
     const importe = (valor: unknown): number => centimos(valor ?? 0, true);
     const detalle = Array.isArray(c.payments_detail) ? c.payments_detail.map(objeto) : [];

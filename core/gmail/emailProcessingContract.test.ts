@@ -134,10 +134,39 @@ test("la búsqueda puntual con volverAProponer retira el descarte del operador a
 // Cadena completa (Carlos, 14-10): los nombres del documento viajan de la propuesta a la pregunta «¿conciliar?» y a «Sí, conciliar».
 test("los nombres alternativos del documento llegan a la pregunta de conciliación y a la conciliación posterior", async () => {
   const fuente = await readFile(join(process.cwd(), "core/gastos/gastoCallbackHandler.ts"), "utf8");
-  assert.match(fuente, /nombresAlternativos: propuesta\.nombresAlternativos,\n\s*\};\n\n\s*if \(conciliarInline\)/, "datosConciliacionPendiente lleva los nombres");
+  assert.match(fuente, /nombresAlternativos: propuesta\.nombresAlternativos,\n\s*\};\n\n(\s*\/\/[^\n]*\n)*\s*if \(conciliarInline \|\| propuesta\.conciliacionPlanificada\)/, "datosConciliacionPendiente lleva los nombres");
   assert.ok(fuente.includes("pendiente.threadIdGmail,\n      pendiente.nombresAlternativos\n"), "«Sí, conciliar» pasa los nombres de la pendiente");
   assert.match(fuente, /buscarMovimientoSimilar\(empresa, \{ monto, fecha: fechaBusqueda, moneda, proveedor, concepto: conceptoBusqueda, nombresAlternativos \}\)/);
   const store = await readFile(join(process.cwd(), "core/gastos/conciliacionPendienteStore.ts"), "utf8");
   assert.match(store, /const ULTIMA_COLUMNA = String\.fromCharCode\(64 \+ HEADERS\.length\)/);
   for (const rango of store.match(/`\$\{TAB_NAME\}!A[^`]*:[^`]*`/g) ?? []) assert.match(rango, /\$\{ULTIMA_COLUMNA\}/, `rango fijo: ${rango}`);
+});
+
+// Periodo contable cerrado (casos reales 14-10): «Sí, usar hoy» concilia contra el cargo ya identificado y la pregunta busca en la fecha del cargo.
+test("con la fecha bloqueada, el botón concilia contra el movimiento recomendado y la pregunta usa la fecha del cargo", async () => {
+  const fuente = await readFile(join(process.cwd(), "core/gastos/gastoCallbackHandler.ts"), "utf8");
+  const bloque = fuente.slice(fuente.indexOf("async function manejarFechaBloqueada"), fuente.indexOf("async function manejarFechaBloqueada") + 4000);
+  assert.match(bloque, /movimientoRecomendadoPropuesta\(nuevaPropuesta\)/);
+  assert.match(bloque, /recomendado \? "gasto_nuevo_conciliar" : "gasto_nuevo"/);
+  assert.match(fuente, /fecha: propuesta\.movimientosAmbiguos\?\.\[0\]\?\.fecha \|\| propuesta\.fecha,/);
+});
+
+// Carlos, 14-10-2026 (caso Kelly / Crepes & Waffles): si el dato ya se le pidió al creador, la cola no espera al operador.
+test("la cola aparca el correo activo cuando el dato que falta ya se pidió al creador y sigue con el siguiente", async () => {
+  const fuente = await readFile(join(process.cwd(), "core/jobs/revisarCorreoNuevo.ts"), "utf8");
+  const fn = fuente.slice(fuente.indexOf("export async function aparcarActivoSiEsperaAlCreador"), fuente.indexOf("export async function avanzarColaCorreoSiActivo("));
+  assert.match(fn, /pendientesYaSolicitados\(\)/);
+  assert.match(fn, /pendientes\.every\(\(p\) => solicitados\.has\(p\.id\)\)/, "solo si TODAS las preguntas del correo ya se pidieron");
+  assert.match(fn, /avanzarColaCorreoSiActivo\(chatId, \{ threadId: activo\.id, mensajeId: activo\.mensajeId \}/);
+  assert.match(fuente, /if \(activo && await aparcarActivoSiEsperaAlCreador\(chatId, activo\)\)/);
+});
+
+// Caso real RODOAR (14-10-2026): el comprobante venía en un mensaje anterior del hilo; la cola solo miraba el último.
+test("procesarCorreoLocalizado procesa el mensaje anterior del hilo con adjuntos pendientes, conservando la identidad de la cola", async () => {
+  const fuente = await readFile(join(process.cwd(), "core/jobs/revisarCorreoNuevo.ts"), "utf8");
+  const fn = fuente.slice(fuente.indexOf("async function procesarCorreoLocalizado("), fuente.indexOf("async function procesarCorreoLocalizado(") + 3000);
+  const identidad = fn.indexOf("const identidadCola: IdentidadCorreoCola = {");
+  const eleccion = fn.indexOf("mensajeDelHiloConAdjuntosPendientes(correo)");
+  assert.ok(identidad >= 0 && eleccion > identidad, "la identidad de la cola se fija ANTES de cambiar de mensaje");
+  assert.match(fn, /if \(anterior\) \{[\s\S]*correo = anterior;/);
 });

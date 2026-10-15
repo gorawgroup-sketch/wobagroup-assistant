@@ -72,7 +72,7 @@ test("caso real Alejandro: cada cargo recibe su propia acción y la respuesta so
   assert.match(a.resumen, /2\. 05\/09\/2026 · Dlo\*uber Rides[^]*Mantener el cargo pendiente como «no reconocido».*no volver a reclamárselo/);
   // 3 Payu*uber: el recibo ya soporta el 7,35 del 22/09 → pedir el del 23/09
   assert.match(a.resumen, /3\. 23\/09\/2026 · Payu\*uber[^]*ya soporta OTRO cargo, conciliado: 7,35 EUR del 22\/09[^]*Pedirle el recibo del viaje del 23\/09/);
-  assert.match(a.accionSugerida, /^Responder a Alejandro confirmando lo resuelto y pidiéndole solo lo que falta: el recibo del cargo de 7,37 EUR del 23\/09/);
+  assert.match(a.accionSugerida, /^PRIMERO, con proponer_envio_correo y en este mismo hilo: responder a Alejandro confirmando lo resuelto y pidiéndole solo lo que falta: el recibo del cargo de 7,37 EUR del 23\/09/);
   assert.doesNotMatch(a.accionSugerida, /Rappi|Dlo\*uber/, "lo resuelto o no reconocido no se vuelve a pedir");
   assert.match(a.resumen, /Adjuntos leídos: image\.png \(captura de la app del banco.*\); Receipt_22sep\.pdf \(gasto: Uber 26\.971,00 COP\)/);
 });
@@ -112,4 +112,78 @@ test("la lista de cargos del modelo se acepta como lista, como texto JSON o como
   assert.equal(extraerListaCargos({ cargos: "esto no es json" }), undefined);
   assert.equal(extraerListaCargos({ cargos: 5 }), undefined);
   assert.equal(extraerListaCargos(undefined), undefined);
+});
+
+import { extraerCuerpoCitado } from "./respuestaSoportes";
+// Caso real (Kelly, 14-10-2026): respondió anotando junto a cada fila de la tabla citada; el cuerpo propio solo traía saludo y firma.
+test("extraerCuerpoCitado conserva la tabla citada con las anotaciones de la persona junto a cada cargo", () => {
+  const cuerpo = [
+    "Hola, les envío.", "Saludos, Kelly", "",
+    "El lun, 13 oct 2026 a las 9:00, Admin Asistente <asistente@wobagroup.com> escribió:",
+    "> 1 | 17/08/2026 | Airbnb * Hm9rh5qbqw | 495,13 USD | Pendiente. ENVIADO",
+    "> 2 | 02/09/2026 | Dlo*serv Uber Eats Ca | 0,45 USD | Pendiente. NO LO ENCUENTRO COMO SOPORTE EN UBER",
+    ">> 7 | 30/09/2026 | Cafe Pergamino 10b | 28,49 USD | Pendiente REENVIADO COMO 21.16 euros - Desayuno com Yanessy - Visa",
+  ].join("\n");
+  const citado = extraerCuerpoCitado(cuerpo);
+  assert.match(citado, /Airbnb \* Hm9rh5qbqw .*ENVIADO/);
+  assert.match(citado, /NO LO ENCUENTRO COMO SOPORTE EN UBER/);
+  assert.match(citado, /^7 \| 30\/09\/2026 .*REENVIADO COMO 21\.16 euros/m);
+  assert.doesNotMatch(citado, /Saludos, Kelly/);
+});
+
+// Carlos, 14-10-2026: en todos los cargos sin comprobante se envía el formato de transacciones sin soporte de la empresa para firma.
+test("un cargo reconocido sin recibo se cubre con la declaración de gastos sin soporte y la acción sugerida la prepara", () => {
+  const a = componerAnalisis({
+    nombre: "Kelly Johanna Correales", empresa: "Footprint", email: "kelly@footprint.global",
+    cargos: [CARGOS[1]],
+    interpretaciones: [{ numero: 1, situacion: "sin_recibo", loQueDice: "No lo encuentro como soporte en Uber, seguramente es un cargo adicional" }],
+    hechos: [{}], soportes: [],
+  });
+  assert.match(a.resumen, /Reconoce el cargo pero no tiene ni puede conseguir el comprobante/);
+  assert.match(a.resumen, /declaración de gastos sin soporte/);
+  assert.match(a.accionSugerida, /preparar_declaracion_gastos_sin_soporte/);
+  assert.match(a.accionSugerida, /Footprint/);
+  assert.match(a.accionSugerida, new RegExp(`id ${CARGOS[1].id}`));
+  assert.doesNotMatch(a.accionSugerida, /pidiéndole solo lo que falta/);
+});
+
+import { emparejarCorreoAnterior, localizarSoportesEnviadosAntes } from "./respuestaSoportes";
+// Caso real Kelly (14-10-2026): «REENVIADO» sin adjunto; el recibo llegó en un correo anterior ya registrado.
+test("«ya lo envié» sin adjunto: se localiza el correo anterior por importe o por el asunto citado, y su gasto registrado", async () => {
+  const cargo = { ...CARGOS[1], fecha: "2026-09-30", comercio: "Cafe Pergamino 10b", total: -28.49, monedaCuenta: "USD", importeOriginal: 95711, monedaOriginal: "COP" };
+  const correos = [
+    { id: "m1", asunto: "21.16 euros - Desayuno com Yanessy - Visa", fecha: "2026-09-30" },
+    { id: "m2", asunto: "9.55 euros - Almuerzo MED - Visa", fecha: "2026-09-30" },
+    { id: "m3", asunto: "28,49 USD - Otro - Visa", fecha: "2026-08-01" },
+  ];
+  const dice: InterpretacionCargo = { numero: 1, situacion: "soporte_enviado_antes", loQueDice: "Anota 'REENVIADO COMO 21.16 euros - Desayuno com Yanessy - Visa' junto al cargo" };
+  assert.equal(emparejarCorreoAnterior(cargo, dice, correos)?.id, "m1", "por el asunto citado en su respuesta");
+  assert.equal(emparejarCorreoAnterior({ ...cargo, total: -9.55 }, { ...dice, loQueDice: "reenviado" }, correos)?.id, "m2", "por el importe del cargo en el asunto");
+  assert.equal(emparejarCorreoAnterior({ ...cargo, total: -28.49 }, { ...dice, loQueDice: "reenviado" }, correos), undefined, "fuera de la ventana de fechas no cuenta");
+
+  const interpretaciones: InterpretacionCargo[] = [dice];
+  const soportes = await localizarSoportesEnviadosAntes("kelly@footprint.global", "Footprint", [cargo], interpretaciones, {
+    correosDe: async () => correos,
+    registros: async () => [{ mensajeIdGmail: "m1", gastoId: "g-21", empresa: "Footprint", creadoEn: 1, identidad: { proveedor: "CAFE DE SANTA BARBARA S.A.S", monto: 21.16, moneda: "EUR", fecha: "2026-09-30" } } as never],
+  });
+  assert.equal(soportes.length, 1);
+  assert.equal(soportes[0].yaRegistrado?.gastoId, "g-21");
+  assert.equal(interpretaciones[0].adjunto, soportes[0].nombre, "la interpretación queda enlazada al soporte localizado");
+  const a = componerAnalisis({ nombre: "Kelly", cargos: [cargo], interpretaciones, hechos: [{}], soportes });
+  assert.match(a.resumen, /ya estaba registrado como gasto/);
+  assert.match(a.resumen, /Conciliar ese gasto ya registrado con este cargo/);
+  assert.doesNotMatch(a.accionSugerida, /pidiéndole solo lo que falta/);
+});
+
+test("«ya lo envié» con el correo anterior aún en la cola: no se le pide nada, se procesa ese correo", async () => {
+  const cargo = { ...CARGOS[1], fecha: "2026-10-01", comercio: "Crepes Y Waffles Pobla", total: -65.67, monedaCuenta: "EUR" };
+  const interpretaciones: InterpretacionCargo[] = [{ numero: 1, situacion: "soporte_enviado_antes", loQueDice: "REENVIADO" }];
+  const soportes = await localizarSoportesEnviadosAntes("k@x.com", "Footprint", [cargo], interpretaciones, {
+    correosDe: async () => [{ id: "m8", asunto: "Fwd: 65,67 euros - Cena Team Colombia - Visa", fecha: "2026-10-11" }],
+    registros: async () => [],
+  });
+  assert.equal(soportes[0]?.enColaSinProcesar, true);
+  const a = componerAnalisis({ nombre: "Kelly", cargos: [cargo], interpretaciones, hechos: [{}], soportes });
+  assert.match(a.resumen, /sigue en la cola de revisión, aún sin registrar/);
+  assert.doesNotMatch(a.accionSugerida, /pidiéndole/);
 });

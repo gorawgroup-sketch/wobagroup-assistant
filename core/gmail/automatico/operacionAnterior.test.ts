@@ -349,3 +349,24 @@ test("si no se puede dejar constancia del cierre, la operación en memoria vuelv
   assert.equal(op.pasoIncierto, "conciliando");
   assert.equal(op.plan.version, "correo-gastos-v-antigua");
 });
+
+// Caso real 14-10-2026: «309,74 USD - Airbnb Madrid» quedó «incierta, sin compra registrada» y bloqueaba el correo sin salida.
+test("una operación sin compra cuya escritura nunca empezó (sin registro durable) se cierra como rechazada y el correo queda libre", async () => {
+  const op = operacion("incierta", { compraId: undefined, pasoIncierto: "creando" });
+  const sinRegistro: HechosCierre = { compra: null, adjuntos: 0, comprobanteCoincide: null, movimiento: null, escrituraRegistrada: false };
+  const { deps, registro, almacen } = escenario([op], { hechos: () => sinRegistro });
+  const r = await resolverOperacionAnterior(op.plan.correo.threadId, op.plan.correo.id, deps);
+  assert.equal(r.tipo, "libre");
+  assert.equal(almacen.get(op.id)?.estado, "rechazada");
+  assert.equal(registro.finalizadas, 0, "no hay gasto que registrar");
+  assert.ok(registro.auditorias.some(a => a.tipo === "cierre_no_ejecutada"));
+});
+
+test("una operación sin compra pero CON registro durable de creación sigue bloqueada hasta tener pruebas", async () => {
+  const op = operacion("incierta", { compraId: undefined, pasoIncierto: "creando" });
+  const conRegistro: HechosCierre = { compra: null, adjuntos: 0, comprobanteCoincide: null, movimiento: null, escrituraRegistrada: true };
+  const { deps, almacen } = escenario([op], { hechos: () => conRegistro });
+  const r = await resolverOperacionAnterior(op.plan.correo.threadId, op.plan.correo.id, deps);
+  assert.equal(r.tipo, "bloqueada");
+  assert.equal(almacen.get(op.id)?.estado, "incierta");
+});

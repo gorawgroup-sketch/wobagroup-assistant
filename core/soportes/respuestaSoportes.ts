@@ -8,8 +8,8 @@ import { crearMensajeAnthropic } from "../ai/anthropicGateway";
 import { resolverModeloDocumental } from "../ai/modelRouting";
 import { crearEjecucionIA } from "../ai/policy";
 import { extraerDatosFactura } from "../documental/extractInvoiceData";
-import { buscarGastoProcesadoPorIdentidad } from "../gastos/gastoPorCorreoStore";
-import { descargarAdjunto, extraerDireccionCorreo, type CorreoResumen } from "../gmail/client";
+import { buscarGastoProcesadoPorIdentidad, listarRegistrosGastoPorEmpresa, type GastoPorCorreo } from "../gastos/gastoPorCorreoStore";
+import { buscarMensajes, descargarAdjunto, extraerDireccionCorreo, obtenerResumenCorreo, type CorreoResumen } from "../gmail/client";
 import type { AnalisisCorreo } from "../gmail/classifyEmail";
 import { listBankMovements, listTreasuryAccounts, type Empresa } from "../holded/client";
 import { ultimaSolicitudEnviada } from "./campanaSoportesStore";
@@ -23,7 +23,7 @@ import { lineaCargo, nombreDePila, type CargoCorreo } from "./redactarCorreoSopo
  * UNA acción concreta POR CARGO. Solo lee: nunca crea, concilia ni envía nada (la propuesta pasa por los botones del correo).
  */
 
-export type SituacionCargo = "soporte_adjunto" | "soporte_enviado_antes" | "compensado_reembolso" | "no_reconoce" | "otra_persona" | "sin_mencion";
+export type SituacionCargo = "soporte_adjunto" | "soporte_enviado_antes" | "compensado_reembolso" | "no_reconoce" | "sin_recibo" | "otra_persona" | "sin_mencion";
 
 export interface InterpretacionCargo {
   numero: number;
@@ -43,6 +43,8 @@ export interface SoporteLeido {
   fecha?: string;
   /** Si ese mismo archivo (o su número de documento) ya se convirtió en un gasto, cuál. */
   yaRegistrado?: { gastoId: string; proveedor?: string; monto?: number; moneda?: string; fecha?: string };
+  /** El recibo llegó en un correo anterior de la persona que sigue en la cola de revisión, aún sin registrar. */
+  enColaSinProcesar?: boolean;
   /** Otro cargo del banco, ya conciliado, que corresponde al importe del gasto ya registrado. */
   cargoQueYaLoSoporta?: { fecha: string; importe: number; moneda: string };
   /** Qué es el documento cuando no es un gasto (una captura de la app del banco, un resumen…). */
@@ -59,6 +61,8 @@ export interface PropuestaCargo {
   accion: string;
   /** true si Alejandro tiene que hacer algo (mandar un soporte, aclarar): entra en la respuesta que se le propone. */
   pideAlRemitente?: string;
+  /** La persona reconoce el cargo pero no tiene comprobante: se cubre con la declaración de gastos sin soporte firmada (Carlos, 14-10-2026). */
+  sinSoporte?: boolean;
 }
 
 const dinero = (n: number, m: string): string => `${new Intl.NumberFormat("es-ES", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n)} ${m}`;
@@ -70,6 +74,18 @@ export function limpiarCuerpoSinCitas(cuerpo: string): string {
   const corte = lineas.findIndex((l, i) => /^\s*(on|el)\b.{0,120}(wrote|escribi[óo]):?\s*$/i.test(l) || (/^\s*(on|el)\b.{0,80}$/i.test(l) && /(wrote|escribi[óo]):?\s*$/i.test(lineas[i + 1] ?? "")));
   const propias = (corte >= 0 ? lineas.slice(0, corte) : lineas).filter((l) => !/^\s*>/.test(l));
   return propias.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+/**
+ * El correo citado (la solicitud que se le envió), sin las marcas «>»: muchas personas contestan ESCRIBIENDO JUNTO A CADA FILA de
+ * la tabla citada («ENVIADO», «REENVIADO», «REENVIADO COMO 21.16 euros - …», «NO LO ENCUENTRO…»). Caso real (Kelly, 14-10-2026):
+ * el lector solo miraba el cuerpo sin citas y concluyó «no dice nada» de 6 cargos que ella había anotado uno a uno.
+ */
+export function extraerCuerpoCitado(cuerpo: string): string {
+  const lineas = cuerpo.replace(/\r/g, "").split("\n");
+  const corte = lineas.findIndex((l, i) => /^\s*(on|el)\b.{0,120}(wrote|escribi[óo]):?\s*$/i.test(l) || (/^\s*(on|el)\b.{0,80}$/i.test(l) && /(wrote|escribi[óo]):?\s*$/i.test(lineas[i + 1] ?? "")));
+  const citadas = corte >= 0 ? lineas.slice(corte + 1) : lineas.filter((l) => /^\s*>/.test(l));
+  return citadas.map((l) => l.replace(/^\s*(>\s?)+/, "")).join("\n").replace(/\n{3,}/g, "\n\n").trim();
 }
 
 /** «Re: Footprint · Soportes pendientes de tus gastos con tarjeta (…)» → { empresa }; undefined si no es la respuesta a esa solicitud. */
@@ -113,6 +129,12 @@ export function proponerAccionCargo(cargo: CargoCorreo, dice: InterpretacionCarg
         accion: "Crear el gasto desde ese comprobante y conciliarlo con este cargo: llega a continuación como propuesta con sus botones.",
       };
     }
+    if (soporte?.enColaSinProcesar) {
+      return {
+        resultado: `Sí lo envió: ${soporte.nombre}; ese correo sigue en la cola de revisión, aún sin registrar.`,
+        accion: "Nada que pedirle: procesar ese correo anterior (la cola lo registrará y conciliará con este cargo).",
+      };
+    }
     return {
       resultado: soporte ? `El adjunto ${soporte.nombre} no es un comprobante de gasto (${soporte.descripcion ?? "no trae proveedor ni importe"}).` : "Dice que lo envió, pero no encuentro ese comprobante ni en este correo ni ya registrado.",
       accion: "Pedirle de nuevo el recibo de este cargo.",
@@ -135,6 +157,14 @@ export function proponerAccionCargo(cargo: CargoCorreo, dice: InterpretacionCarg
     };
   }
 
+  if (situacion === "sin_recibo") {
+    return {
+      resultado: "Reconoce el cargo pero no tiene ni puede conseguir el comprobante.",
+      accion: "Cubrirlo con la declaración de gastos sin soporte de la empresa, firmada por la persona (se le envía para firma y queda como soporte en Holded).",
+      sinSoporte: true,
+    };
+  }
+
   if (situacion === "no_reconoce" || situacion === "otra_persona") {
     return {
       resultado: situacion === "otra_persona" ? "Dice que el cargo corresponde a otra persona." : "No reconoce el cargo y dice que no es un gasto suyo.",
@@ -151,6 +181,95 @@ export function proponerAccionCargo(cargo: CargoCorreo, dice: InterpretacionCarg
   };
 }
 
+/** Importes tal como suelen escribirse en los asuntos («8,35», «8.35», «245.050», «245050»). */
+function formasDeImporte(n: number | undefined): string[] {
+  if (n === undefined || !Number.isFinite(n)) return [];
+  const v = Math.abs(n);
+  const dos = v.toFixed(2);
+  const entero = Number.isInteger(v) ? String(v) : "";
+  const miles = v >= 1000 ? Math.round(v).toLocaleString("es-ES") : "";
+  return [...new Set([dos, dos.replace(".", ","), entero, miles].filter(Boolean))];
+}
+const normalizarTexto = (t: string): string => t.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/\s+/g, " ").trim();
+
+export interface CorreoAnteriorResumen { id: string; asunto: string; fecha: string }
+
+/**
+ * Pura. «Ya lo envié» sin adjunto: qué correo anterior de la persona trajo el recibo de ESTE cargo. Se reconoce por el asunto
+ * (el importe del cargo o del comercio, o el asunto citado en su respuesta, p. ej. «REENVIADO COMO 21.16 euros - Desayuno com
+ * Yanessy») y por la fecha (desde 3 días antes del cargo hasta 25 después). Caso real Kelly, 14-10-2026: seis cargos
+ * «reenviados» cuyos correos ya estaban registrados y el lector volvía a pedir el recibo.
+ */
+export function emparejarCorreoAnterior(cargo: CargoCorreo, dice: InterpretacionCargo | undefined, correos: CorreoAnteriorResumen[]): CorreoAnteriorResumen | undefined {
+  const asuntoCitado = normalizarTexto(dice?.loQueDice ?? "");
+  const importes = [...formasDeImporte(cargo.total), ...formasDeImporte(cargo.importeOriginal)];
+  const candidatos = correos.filter((c) => {
+    const d = (Date.parse(`${c.fecha.slice(0, 10)}T00:00:00Z`) - Date.parse(`${cargo.fecha}T00:00:00Z`)) / 86_400_000;
+    if (!Number.isFinite(d) || d < -3 || d > 25) return false;
+    const asunto = normalizarTexto(c.asunto).replace(/^(re|rv|fwd?|fw):\s*/g, "");
+    if (asunto.length >= 10 && asuntoCitado.includes(asunto)) return true;
+    return importes.some((imp) => asunto.includes(imp.toLowerCase()));
+  });
+  // Si hay varios con el mismo importe, el más cercano a la fecha del cargo.
+  return candidatos.sort((a, b) => Math.abs(Date.parse(a.fecha) - Date.parse(cargo.fecha)) - Math.abs(Date.parse(b.fecha) - Date.parse(cargo.fecha)))[0];
+}
+
+/**
+ * Con red: para cada cargo «ya lo envié» sin adjunto, localiza el correo anterior y su gasto registrado, y lo convierte en un
+ * SoporteLeido (nombre = «correo del DD/MM "asunto"») enlazado a la interpretación por `adjunto`, para que la acción por cargo
+ * lo trate como el comprobante que es. Un fallo de Gmail o del registro no decide nada: se sigue sin esta pista.
+ */
+export async function localizarSoportesEnviadosAntes(
+  email: string,
+  empresa: Empresa,
+  cargos: CargoCorreo[],
+  interpretaciones: InterpretacionCargo[],
+  deps: {
+    correosDe: (email: string) => Promise<CorreoAnteriorResumen[]>;
+    registros: (empresa: Empresa) => Promise<GastoPorCorreo[]>;
+  } = depsCorreosAnteriores
+): Promise<SoporteLeido[]> {
+  const pendientes = interpretaciones.filter((i) => i.situacion === "soporte_enviado_antes" && !i.adjunto);
+  if (!pendientes.length) return [];
+  let correos: CorreoAnteriorResumen[];
+  let registros: GastoPorCorreo[];
+  try {
+    [correos, registros] = await Promise.all([deps.correosDe(email), deps.registros(empresa)]);
+  } catch (error) {
+    console.error("[respuestaSoportes] No se pudieron leer los correos anteriores de la persona (se sigue sin esa pista):", error instanceof Error ? error.message : error);
+    return [];
+  }
+  const soportes: SoporteLeido[] = [];
+  for (const dice of pendientes) {
+    const cargo = cargos[dice.numero - 1];
+    if (!cargo) continue;
+    const correo = emparejarCorreoAnterior(cargo, dice, correos);
+    if (!correo) continue;
+    const nombre = `correo del ${fechaCorta(correo.fecha.slice(0, 10))} «${correo.asunto}»`;
+    dice.adjunto = nombre;
+    const reg = registros.find((r) => r.mensajeIdGmail === correo.id);
+    soportes.push(reg
+      ? { nombre, esGasto: true, proveedor: reg.identidad?.proveedor, monto: reg.identidad?.monto, moneda: reg.identidad?.moneda, fecha: reg.identidad?.fecha,
+          yaRegistrado: { gastoId: reg.gastoId, proveedor: reg.identidad?.proveedor, monto: reg.identidad?.monto, moneda: reg.identidad?.moneda, fecha: reg.identidad?.fecha } }
+      : { nombre, esGasto: false, descripcion: "correo anterior en la cola de revisión", enColaSinProcesar: true });
+  }
+  return soportes;
+}
+
+const depsCorreosAnteriores = {
+  correosDe: async (email: string): Promise<CorreoAnteriorResumen[]> => {
+    const ids = await buscarMensajes(`from:${email} newer_than:120d`, 60);
+    const salida: CorreoAnteriorResumen[] = [];
+    for (const id of ids) {
+      const r = await obtenerResumenCorreo(id);
+      const fecha = new Date(r.fecha);
+      salida.push({ id, asunto: r.asunto, fecha: Number.isFinite(fecha.getTime()) ? fecha.toISOString().slice(0, 10) : "" });
+    }
+    return salida;
+  },
+  registros: listarRegistrosGastoPorEmpresa,
+};
+
 export function componerAnalisis(params: {
   nombre: string;
   cargos: CargoCorreo[];
@@ -158,6 +277,9 @@ export function componerAnalisis(params: {
   hechos: HechosCargo[];
   soportes: SoporteLeido[];
   adjuntosNoLeidos?: string[];
+  /** Empresa y correo de la persona: necesarios para preparar la declaración de gastos sin soporte cuando algún cargo no tiene comprobante. */
+  empresa?: Empresa;
+  email?: string;
 }): AnalisisCorreo {
   const { nombre, cargos, interpretaciones, hechos, soportes } = params;
   const propuestas = cargos.map((c, i) => {
@@ -179,9 +301,20 @@ export function componerAnalisis(params: {
     ? `Adjuntos leídos: ${soportes.map((s) => `${s.nombre} (${s.esGasto ? `gasto: ${[s.proveedor, s.monto !== undefined ? dinero(s.monto, s.moneda ?? "") : ""].filter(Boolean).join(" ")}` : s.descripcion ?? "no es un gasto"})`).join("; ")}.`
     : "El correo no trae adjuntos.";
   const resumen = [`Respuesta de ${nombre} a la solicitud de soportes — leí el cuerpo completo y los adjuntos; esto es lo que propongo por cada cargo pedido:`, adjuntos, "", ...bloques].join("\n");
-  const accionSugerida = pendientes.length
-    ? `Responder a ${nombreDePila(nombre) || nombre} confirmando lo resuelto y pidiéndole solo lo que falta: ${pendientes.join("; ")}.`
-    : `Responder a ${nombreDePila(nombre) || nombre} agradeciendo la respuesta y confirmando lo resuelto; no queda nada por pedirle.`;
+  // Cargos reconocidos sin comprobante: norma de Carlos (14-10-2026) — en todos los casos sin soporte se envía el formato de
+  // transacciones sin soporte de la empresa para que lo devuelvan firmado y sirva de respaldo (ver core/soportes/declaracion/).
+  const sinSoporte = cargos.filter((_, i) => propuestas[i].propuesta.sinSoporte);
+  const declaracion = sinSoporte.length
+    ? ` Además, preparar la declaración de gastos sin soporte de ${params.empresa ?? "su empresa"} para ${nombre}${params.email ? ` (${params.email})` : ""} con la herramienta preparar_declaracion_gastos_sin_soporte y estos cargos: ${sinSoporte.map((c) => `${c.fecha} · ${c.comercio.trim()} · ${Math.abs(c.total)} ${c.monedaCuenta} (id ${c.id})`).join("; ")}; en la respuesta decirle que le llega ese documento para firmarlo y devolverlo.`
+    : "";
+  // Orden de ejecución al «Proceder» (caso real Kelly, 14-10-2026: el modelo gastó sus pasos en conciliaciones y nunca propuso el
+  // correo ni la declaración): 1) el correo de respuesta (proponer_envio_correo, en el mismo hilo); 2) la declaración si procede;
+  // las conciliaciones y los correos en cola NO se ejecutan aquí: los hace la cola/el flujo de gastos.
+  const accionSugerida = `PRIMERO, con proponer_envio_correo y en este mismo hilo: ` + (pendientes.length
+    ? `responder a ${nombreDePila(nombre) || nombre} confirmando lo resuelto y pidiéndole solo lo que falta: ${pendientes.join("; ")}.`
+    : `responder a ${nombreDePila(nombre) || nombre} agradeciendo la respuesta y confirmando lo resuelto; no queda nada por pedirle.`) +
+    declaracion +
+    " No concilies ni reproceses nada ahora: las conciliaciones y los correos anteriores en cola los resuelve el flujo de gastos.";
   return { tipo: "necesita_respuesta", resumen, accionSugerida, razon: "Respuesta a la solicitud de soportes de tarjeta: una acción por cargo." };
 }
 
@@ -189,7 +322,7 @@ export function componerAnalisis(params: {
 
 const TOOL_NAME = "reportar_respuesta_soportes";
 
-async function interpretarUnaVez(cargos: CargoCorreo[], cuerpo: string, adjuntos: Array<{ nombre: string; resumen: string }>): Promise<InterpretacionCargo[]> {
+async function interpretarUnaVez(cargos: CargoCorreo[], cuerpo: string, adjuntos: Array<{ nombre: string; resumen: string }>, citado = ""): Promise<InterpretacionCargo[]> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) throw new Error("Falta la variable de entorno ANTHROPIC_API_KEY");
   const cliente = new Anthropic({ apiKey });
@@ -207,8 +340,8 @@ async function interpretarUnaVez(cargos: CargoCorreo[], cuerpo: string, adjuntos
               numero: { type: "number", description: "El Nº del cargo en la tabla enviada." },
               situacion: {
                 type: "string",
-                enum: ["soporte_adjunto", "soporte_enviado_antes", "compensado_reembolso", "no_reconoce", "otra_persona", "sin_mencion"],
-                description: "soporte_adjunto: adjunta el comprobante en ESTE correo. soporte_enviado_antes: dice que ya lo envió en otro correo (aunque lo adjunte de nuevo, usa soporte_adjunto si lo adjunta ahora). compensado_reembolso: el cargo fue reembolsado/anulado. no_reconoce: dice que no es suyo y no lo reconoce. otra_persona: dice que lo hizo otra persona. sin_mencion: no habla de este cargo.",
+                enum: ["soporte_adjunto", "soporte_enviado_antes", "compensado_reembolso", "no_reconoce", "sin_recibo", "otra_persona", "sin_mencion"],
+                description: "soporte_adjunto: adjunta el comprobante en ESTE correo. soporte_enviado_antes: dice que ya lo envió en otro correo (aunque lo adjunte de nuevo, usa soporte_adjunto si lo adjunta ahora). compensado_reembolso: el cargo fue reembolsado/anulado. no_reconoce: dice que no es suyo y no lo reconoce. otra_persona: dice que lo hizo otra persona. sin_mencion: no habla de este cargo. sin_recibo: reconoce el cargo como suyo pero dice que NO tiene o NO encuentra el comprobante (p. ej. «no lo encuentro como soporte en Uber», «no tengo recibo», «fue un cargo adicional»).",
               },
               lo_que_dice: { type: "string", description: "Lo que responde de ESTE cargo, en una frase y con sus datos (fechas, importes, asuntos de correos anteriores)." },
               adjunto: { type: "string", description: "Nombre EXACTO del adjunto que cita como soporte de este cargo, o vacío." },
@@ -224,7 +357,7 @@ async function interpretarUnaVez(cargos: CargoCorreo[], cuerpo: string, adjuntos
   const respuesta = await crearMensajeAnthropic(cliente, ejecucion, {
     model: resolverModeloDocumental("clasificar_correo"),
     max_tokens: 8192,
-    system: "Lees la respuesta de una persona a un correo que le pidió los soportes (facturas/recibos) de cargos hechos con su tarjeta. Para CADA cargo de la tabla, di qué responde de ese cargo concreto, leyendo el cuerpo completo (no las citas). Nunca asumas que algo está resuelto si no lo dice. Termina siempre llamando a la herramienta." + "\n\n" + NORMA_EXTRACTOR,
+    system: "Lees la respuesta de una persona a un correo que le pidió los soportes (facturas/recibos) de cargos hechos con su tarjeta. Para CADA cargo de la tabla, di qué responde de ese cargo concreto, leyendo el cuerpo completo Y la tabla citada: es muy habitual que la persona conteste escribiendo junto a cada fila de la tabla que se le envió («ENVIADO», «REENVIADO», «REENVIADO COMO …», «NO LO ENCUENTRO…»); esas anotaciones son su respuesta a ese cargo («enviado/reenviado» = soporte_enviado_antes; «no lo encuentro / no tengo» = no_reconoce o lo que diga). Nunca asumas que algo está resuelto si no lo dice. Termina siempre llamando a la herramienta." + "\n\n" + NORMA_EXTRACTOR,
     tools: [tool],
     tool_choice: { type: "tool", name: TOOL_NAME },
     messages: [{
@@ -235,7 +368,9 @@ async function interpretarUnaVez(cargos: CargoCorreo[], cuerpo: string, adjuntos
         "",
         `Adjuntos del correo:\n${adjuntos.length ? adjuntos.map((a) => `- ${a.nombre}: ${a.resumen}`).join("\n") : "(ninguno)"}`,
         "",
-        `Respuesta de la persona (sin el correo citado):\n${cuerpo.slice(0, 8000)}`,
+        `Respuesta de la persona (sin el correo citado):\n${cuerpo.slice(0, 8000) || "(vacía: solo saludo/firma o solo anotaciones en la tabla citada)"}`,
+        "",
+        `Correo citado (la tabla que se le envió; mira si hay anotaciones de la persona junto a cada fila):\n${citado.slice(0, 6000) || "(sin texto citado)"}`,
       ].join("\n"),
     }],
   });
@@ -244,7 +379,7 @@ async function interpretarUnaVez(cargos: CargoCorreo[], cuerpo: string, adjuntos
   if (!lista) throw new Error(`El modelo no devolvió la interpretación por cargo (stop: ${respuesta.stop_reason}; entrada: ${JSON.stringify(uso?.input ?? null).slice(0, 300)}).`);
   return lista.map((x) => ({
     numero: Number(x.numero),
-    situacion: (["soporte_adjunto", "soporte_enviado_antes", "compensado_reembolso", "no_reconoce", "otra_persona", "sin_mencion"].includes(String(x.situacion)) ? x.situacion : "sin_mencion") as SituacionCargo,
+    situacion: (["soporte_adjunto", "soporte_enviado_antes", "compensado_reembolso", "no_reconoce", "sin_recibo", "otra_persona", "sin_mencion"].includes(String(x.situacion)) ? x.situacion : "sin_mencion") as SituacionCargo,
     loQueDice: String(x.lo_que_dice ?? ""),
     adjunto: typeof x.adjunto === "string" && x.adjunto.trim() ? x.adjunto.trim() : undefined,
   }));
@@ -265,12 +400,12 @@ export function extraerListaCargos(entrada: unknown): Array<Record<string, unkno
 }
 
 /** Un reintento: una respuesta mal formada del modelo no debe dejar la respuesta del correo sin análisis por cargo. */
-async function interpretar(cargos: CargoCorreo[], cuerpo: string, adjuntos: Array<{ nombre: string; resumen: string }>): Promise<InterpretacionCargo[]> {
+async function interpretar(cargos: CargoCorreo[], cuerpo: string, adjuntos: Array<{ nombre: string; resumen: string }>, citado = ""): Promise<InterpretacionCargo[]> {
   try {
-    return await interpretarUnaVez(cargos, cuerpo, adjuntos);
+    return await interpretarUnaVez(cargos, cuerpo, adjuntos, citado);
   } catch (error) {
     console.error("[respuestaSoportes] Interpretación fallida, se reintenta una vez:", error instanceof Error ? error.message : error);
-    return interpretarUnaVez(cargos, cuerpo, adjuntos);
+    return interpretarUnaVez(cargos, cuerpo, adjuntos, citado);
   }
 }
 
@@ -358,8 +493,9 @@ export async function analizarRespuestaDeSoportes(correo: CorreoResumen, cuerpoC
 
   const cargos = [...solicitud.cargos].sort((a, b) => a.fecha.localeCompare(b.fecha));
   const cuerpo = limpiarCuerpoSinCitas(cuerpoCompleto);
+  const citado = extraerCuerpoCitado(cuerpoCompleto);
   const adjuntos = await leerAdjuntos(correo, asunto.empresa);
-  const interpretaciones = await interpretar(cargos, cuerpo, adjuntos.map((a) => ({ nombre: a.nombre, resumen: a.esGasto ? `comprobante de gasto: ${[a.proveedor, a.monto, a.moneda, a.fecha].filter((x) => x !== undefined && x !== "").join(" ")}` : (a.descripcion ?? "no es un comprobante") })));
+  const interpretaciones = await interpretar(cargos, cuerpo, adjuntos.map((a) => ({ nombre: a.nombre, resumen: a.esGasto ? `comprobante de gasto: ${[a.proveedor, a.monto, a.moneda, a.fecha].filter((x) => x !== undefined && x !== "").join(" ")}` : (a.descripcion ?? "no es un comprobante") })), citado);
 
   let movimientos: MovimientoSimple[] = [];
   try {
@@ -369,5 +505,8 @@ export async function analizarRespuestaDeSoportes(correo: CorreoResumen, cuerpoC
     console.error("[respuestaSoportes] No se pudieron leer los movimientos de Holded:", error instanceof Error ? error.message : error);
   }
   const soportes: SoporteLeido[] = adjuntos.map(({ huella: _h, ...s }) => ({ ...s, cargoQueYaLoSoporta: s.yaRegistrado ? cargoQueYaSoporta(s.yaRegistrado, movimientos) : undefined }));
-  return componerAnalisis({ nombre: solicitud.titular, cargos, interpretaciones, hechos: cargos.map((c) => hechosDelCargo(c, movimientos)), soportes });
+  // «Ya lo envié» sin adjunto: el recibo está en un correo anterior de la persona (y normalmente ya registrado).
+  const anteriores = email ? await localizarSoportesEnviadosAntes(email, asunto.empresa, cargos, interpretaciones) : [];
+  soportes.push(...anteriores.map((s) => ({ ...s, cargoQueYaLoSoporta: s.yaRegistrado ? cargoQueYaSoporta(s.yaRegistrado, movimientos) : undefined })));
+  return componerAnalisis({ nombre: solicitud.titular, cargos, interpretaciones, hechos: cargos.map((c) => hechosDelCargo(c, movimientos)), soportes, empresa: asunto.empresa, email: solicitud.email });
 }

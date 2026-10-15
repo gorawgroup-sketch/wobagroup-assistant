@@ -1,3 +1,4 @@
+import type { ConciliacionPlanificada } from "../holded/conciliacionMultiple/model";
 import { propuestaEnMensajePulsado } from "./propuestaMensajePulsado";
 import { botonContinuarConciliacion, continuarCorreoConciliacion } from "./continuarCorreoConciliacion";
 import { posponerCorreoActivoYContinuar } from "../gmail/posponerCorreoActivo";
@@ -842,7 +843,7 @@ export async function ofrecerEleccionMovimientosAmbiguos(
         ? describirMovimientoMultimoneda(m, i)
         : m.origenCoincidencia === "cargo_mayor" && montoGasto !== undefined
         ? describirCargoMayor(m, montoGasto, i)
-        : `  ${i + 1}. "${m.descripcion || "(sin descripción)"}" — ${m.monto.toFixed(2)} ${m.moneda} (${m.fecha})${m.compatibilidad === "por_confirmar" ? " ⚠️ nombre distinto" : m.compatibilidad === "aprendido" ? " ✔ confirmado antes para este proveedor" : ""}`)
+        : `  ${i + 1}. "${m.descripcion || "(sin descripción)"}" — ${m.monto.toFixed(2)} ${m.moneda} (${m.fecha})${m.aviso ? ` ⚠️ ${m.aviso}` : m.compatibilidad === "por_confirmar" ? " ⚠️ nombre distinto" : m.compatibilidad === "aprendido" ? " ✔ confirmado antes para este proveedor" : ""}`)
       .join("\n");
     await sendTelegramMessageWithButtons(
       chatId,
@@ -898,6 +899,24 @@ async function recuperarConciliacionAntesDeBuscar(empresa: Empresa, gastoId: str
     : "⏳ La operación anterior todavía requiere verificación. No se buscarán ni asignarán otros cargos; verificar solo relee compra y banco." };
 }
 
+/**
+ * Puente entre un gasto recién creado y la conciliación múltiple cuando los cargos ya se conocían al proponerlo (declaración
+ * de gastos sin soporte firmada: un gasto por el total y todos sus cargos). Solo prepara el plan y manda el botón.
+ */
+async function proponerConciliacionPlanificada(empresa: Empresa, gastoId: string, chatId: number, planificada: ConciliacionPlanificada): Promise<ResultadoIntentarConciliar> {
+  try {
+    const { conciliacionMultiple } = await import("../holded/conciliacionMultiple/runtime");
+    const { proponerPlanConciliacionMultiple } = await import("../holded/conciliacionMultiple/proponer");
+    const p = await conciliacionMultiple.preparar({ empresa, chatId, compraId: gastoId, movimientos: planificada.movimientos, motivo: planificada.motivo, ...(planificada.origen ? { origen: planificada.origen } : {}) });
+    await proponerPlanConciliacionMultiple(chatId, p, `🔗 Gasto creado: conciliación con los ${p.movimientos.length} cargo(s) previstos.`);
+    return { nota: `\n\n🔗 Te mandé arriba el desglose de la conciliación con los ${p.movimientos.length} cargo(s) previstos (plan ${p.id}); falta tu botón «Confirmar conciliación múltiple».`, estado: "esperando_eleccion" };
+  } catch (error) {
+    const detalle = error instanceof Error ? error.message : String(error);
+    console.error(`[gastoCallbackHandler] No se pudo preparar la conciliación planificada del gasto ${gastoId}:`, detalle);
+    return { nota: `\n\n⚠️ El gasto queda creado, pero no pude preparar la conciliación con los ${planificada.movimientos.length} cargo(s) previstos (${detalle}). Pide «aplica la declaración firmada» para reintentarla o concíliala a mano.`, estado: "sin_candidato" };
+  }
+}
+
 async function intentarConciliar(
   empresa: Empresa,
   monto: number,
@@ -912,8 +931,11 @@ async function intentarConciliar(
   comprobanteConfirmado: boolean = true,
   threadIdGmail?: string,
   /** Otros nombres del documento (ver ConciliacionPendiente.nombresAlternativos): la conciliación busca igual que la propuesta. */
-  nombresAlternativos?: string[]
+  nombresAlternativos?: string[],
+  /** Cargos ya conocidos al proponer (declaración firmada): se propone el lote múltiple con ellos, sin buscar un cargo suelto. */
+  planificada?: ConciliacionPlanificada
 ): Promise<ResultadoIntentarConciliar> {
+  if (planificada?.movimientos.length) return await proponerConciliacionPlanificada(empresa, gastoId, chatId, planificada);
   try {
     const recuperada = await recuperarConciliacionAntesDeBuscar(empresa, gastoId);
     if (recuperada) return recuperada;
@@ -1061,7 +1083,11 @@ async function conciliarContraMovimientoEspecifico(
     // Cargo en otra moneda elegido a mano: antes de conciliar se fija la tasa de cambio del gasto a la tasa real de ese
     // cargo, para que la conciliación quede sin diferencia (ni pago extra por cambio ni saldo residual). Si no se puede
     // ajustar con certeza, no se concilia: hacerlo dejaría exactamente la diferencia que se quiere evitar.
-    if (movimiento.origenCoincidencia === "tipo_cambio") {
+    // También cuando gasto y cargo están en la misma moneda extranjera (recibo en USD pagado desde la cuenta en USD): la compra
+    // debe llevar la tasa contable del cargo o Holded la deja «parcial» (Airbnb 495,13 y 309,74 USD, 14-10-2026). La función devuelve
+    // `no_aplica` sin escribir cuando no hace falta.
+    const monedaCargo = (movimiento.monedaNativa ?? movimiento.moneda ?? "EUR").toUpperCase();
+    if (movimiento.origenCoincidencia === "tipo_cambio" || monedaCargo !== "EUR") {
       try {
         const alineacion = await alinearTasaCambioAlMovimientoElegido(empresa, gastoId, movimiento);
         if (alineacion.estado === "ajustada") {
@@ -1911,7 +1937,8 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
           propuesta.correoOrigen?.mensajeIdGmail,
           comprobanteConfirmado,
           propuesta.correoOrigen?.threadId,
-          propuesta.nombresAlternativos
+          propuesta.nombresAlternativos,
+          propuesta.conciliacionPlanificada
         );
         preguntaConciliacionPendiente = resultadoConciliacion.estado === "esperando_eleccion";
         cierreCorreoVerificado = gastoPermiteCerrarCorreo(comprobanteConfirmado, resultadoConciliacion);
@@ -3552,7 +3579,9 @@ async function crearGastoYReportar(
   const datosConciliacionPendiente = {
     empresa: empresaFinal,
     monto: propuesta.monto,
-    fecha: propuesta.fecha,
+    // La pregunta «¿conciliar?» busca el cargo cerca de SU fecha: si la propuesta ya tenía cargos candidatos, la de ellos
+    // (la fecha del documento puede haberse sustituido por la de hoy por un periodo contable cerrado).
+    fecha: propuesta.movimientosAmbiguos?.[0]?.fecha || propuesta.fecha,
     descripcionGasto: `${nombreContacto} — ${propuesta.monto} ${propuesta.moneda}`,
     gastoId: gasto.id,
     moneda: propuesta.moneda,
@@ -3560,8 +3589,9 @@ async function crearGastoYReportar(
     nombresAlternativos: propuesta.nombresAlternativos,
   };
 
-  if (conciliarInline) {
-    if (movimientoObjetivo) {
+  // Con cargos ya previstos (declaración firmada) se concilia siempre en línea: «Crear (sin conciliar)» no deja el lote colgado.
+  if (conciliarInline || propuesta.conciliacionPlanificada) {
+    if (movimientoObjetivo && !propuesta.conciliacionPlanificada) {
       // Hallazgo real de auditoría xhigh: esta es la MISMA clase de ambigüedad
       // real que gasto_conciliar_elegir aprende de (movimientoObjetivo viene
       // de PropuestaGasto.movimientosAmbiguos, resuelta por Carlos vía el
@@ -3602,7 +3632,8 @@ async function crearGastoYReportar(
       propuesta.correoOrigen?.mensajeIdGmail,
       comprobanteConfirmado,
       propuesta.correoOrigen?.threadId,
-      propuesta.nombresAlternativos
+      propuesta.nombresAlternativos,
+      propuesta.conciliacionPlanificada
     );
     return { gastoId: gasto.id, mensaje: `${baseMensaje}${resultadoConciliacion.nota}`, comprobanteConfirmado,
       estadoConciliacion: resultadoConciliacion.estado,
@@ -3731,8 +3762,14 @@ async function manejarFechaBloqueada(
     motivoReintento: texto,
   });
 
+  // El cargo bancario ya identificado no cambia porque cambie la fecha del documento: si la propuesta traía un
+  // movimiento recomendado, el botón crea Y concilia contra ese movimiento (por su id). Antes creaba sin conciliar y la
+  // pregunta posterior buscaba el cargo cerca de la fecha de HOY, donde no está (casos reales 14-10: tasa turística 8 €
+  // y Airbnb 495,13 USD, ambos «no encontré un movimiento» con el cargo identificado desde el principio).
+  const recomendado = movimientoRecomendadoPropuesta(nuevaPropuesta);
   const botones = [
-    [{ text: `✅ Sí, usar ${fechaHoy}`, callback_data: `gasto_nuevo:${nuevaPropuesta.id}` }],
+    [{ text: recomendado ? `✅ Sí, usar ${fechaHoy} y conciliar con el cargo del ${recomendado.fecha}` : `✅ Sí, usar ${fechaHoy}`,
+       callback_data: `${recomendado ? "gasto_nuevo_conciliar" : "gasto_nuevo"}:${nuevaPropuesta.id}` }],
     [{ text: "❌ Cancelar", callback_data: `gasto_cancelar:${nuevaPropuesta.id}` }],
   ];
 
