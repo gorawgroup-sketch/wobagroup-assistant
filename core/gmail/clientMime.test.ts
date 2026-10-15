@@ -16,6 +16,14 @@ test("el MIME lleva el Message-ID durable y conserva las cabeceras de respuesta"
   assert.match(mime, /Subject: Re: Prueba\r\n/);
 });
 
+test("la copia va en un encabezado Cc, y sin copia no hay encabezado", () => {
+  const base = { to: "destino@example.com", asunto: "Impuestos", cuerpo: "Contenido", messageIdPropio: "<wobi-id@idempotency.wobagroup.com>" };
+  const con = construirMimeConAdjuntos({ ...base, cc: "uno@example.com, dos@example.com" }).toString("utf8");
+  assert.match(con, /To: destino@example\.com\r\nCc: uno@example\.com, dos@example\.com\r\n/);
+  const sin = construirMimeConAdjuntos(base).toString("utf8");
+  assert.doesNotMatch(sin, /^Cc:/m);
+});
+
 test("el interruptor solo desactiva el ledger con false explícito", () => {
   assert.equal(configuracionEnviosCorreoDurables({}).habilitado, true);
   assert.equal(configuracionEnviosCorreoDurables({ WOBI_EMAIL_DURABLE_ENABLED: "errata" }).habilitado, true);

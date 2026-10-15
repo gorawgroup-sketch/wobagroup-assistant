@@ -63,6 +63,7 @@ export const COBERTURA_NORMA: ReadonlyArray<{ archivo: string; cumple: "completa
     motivo: "Analizador versionado por huella (VERSION_ANALISIS): ya exige nombrar la parte no leída y no inventar; cambiarlo fuerza relectura de todo lo pendiente." },
   { archivo: "core/ai/anthropicGateway.ts", cumple: "exento", motivo: "Pasarela técnica: no construye prompts." },
   { archivo: "core/documental/transcribeForCapture.ts", cumple: "exento", motivo: "Transcripción literal de capturas: no decide ni pregunta." },
+  { archivo: "core/documental/instruccionEnPie.ts", cumple: "exento", motivo: "Decisión binaria ORDEN/ARCHIVO sobre el pie de un archivo: no pregunta ni ejecuta; ante la duda el archivo sigue el flujo documental." },
   { archivo: "core/holded/write.ts", cumple: "exento", motivo: "Llamada acotada de apoyo (clasificación de cuenta): sin conversación con el usuario." },
   { archivo: "core/gmail/emailCallbackHandler.ts", cumple: "exento", motivo: "Reutiliza prompts de los módulos cubiertos; no define uno propio." },
   { archivo: "core/jobs/revisarConversacionesAutomaticas.ts", cumple: "exento", motivo: "Auditoría de conversaciones ya cerradas; no interactúa con el usuario." },

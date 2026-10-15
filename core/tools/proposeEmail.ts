@@ -5,7 +5,19 @@ import {
   obtenerBorradorCorreo,
 } from "../gmail/emailDraftStore";
 import { editTelegramMessage, sendTelegramMessageWithButtons } from "../telegram/client";
+import { textoBorradorCorreo } from "../gmail/reenviarBorradorCorreo";
 import type { ToolDefinition } from "./types";
+
+/** Una dirección simple, sin nombre visible ni saltos de línea: lo que se copia al encabezado «Cc» debe ser una dirección y nada más. */
+const DIRECCION_VALIDA = /^[^\s<>@,;]+@[^\s<>@,;]+\.[^\s<>@,;]+$/;
+
+/** Las copias que pide el usuario, listas para el encabezado «Cc»: sin repetidas, en minúsculas; si alguna no es una dirección, se devuelve para avisar. */
+export function normalizarCopias(valor: unknown): { cc?: string; invalida?: string } {
+  const copias = Array.isArray(valor) ? valor.filter((x): x is string => typeof x === "string").map((x) => x.trim()).filter(Boolean) : [];
+  const invalida = copias.find((c) => !DIRECCION_VALIDA.test(c));
+  if (invalida) return { invalida };
+  return copias.length ? { cc: [...new Set(copias.map((c) => c.toLowerCase()))].join(", ") } : {};
+}
 
 /**
  * Permite proponer el envío de un correo desde cualquier conversación normal
@@ -32,6 +44,13 @@ export const proponerEnvioCorreoTool: ToolDefinition = {
       destinatario: {
         type: "string",
         description: "Dirección de correo del destinatario (ej. carlos@wobagroup.com).",
+      },
+      cc: {
+        type: "array",
+        items: { type: "string" },
+        description:
+          "Direcciones de correo en COPIA (CC), una por elemento. Úsalo cuando pidan «con copia a…»: busca antes su dirección real " +
+          "(directorio de personas / registros); nunca inventes una.",
       },
       asunto: { type: "string", description: "Asunto del correo." },
       cuerpo: {
@@ -68,17 +87,22 @@ export const proponerEnvioCorreoTool: ToolDefinition = {
       return "Error: faltan datos (destinatario, asunto o cuerpo) para preparar el borrador.";
     }
 
+    const copias = normalizarCopias(input.cc);
+    if (copias.invalida) return `Error: «${copias.invalida}» no es una dirección de correo válida para la copia. Busca su dirección real antes de preparar el borrador.`;
+    const cc = copias.cc;
+
     const borrador = await crearBorradorCorreo({
       chatId,
       messageId: 0,
       to: destinatario,
+      cc,
       subject: asunto,
       cuerpo,
       threadId,
       messageIdHeader,
     });
 
-    const texto = [`✉️ Borrador de correo para ${destinatario}:`, `Asunto: ${asunto}`, "", cuerpo].join("\n");
+    const texto = textoBorradorCorreo(borrador);
 
     let messageId = 0;
     try {

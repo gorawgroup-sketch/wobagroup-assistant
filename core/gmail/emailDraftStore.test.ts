@@ -194,10 +194,17 @@ test("los adjuntos de Drive y la declaración sobreviven la ida y vuelta por la 
     declaracionId: "7aeb11cd",
   };
   const fila = borradorToRow(borrador);
-  assert.equal(fila.length, 15, "la fila debe cubrir las 15 columnas de la pestaña");
+  assert.equal(fila.length, 16, "la fila debe cubrir las 16 columnas de la pestaña");
   const leido = rowToBorrador(fila);
   assert.deepEqual(leido?.adjuntosDrive, borrador.adjuntosDrive);
   assert.equal(leido?.declaracionId, "7aeb11cd");
+  assert.equal(leido?.cc, undefined, "sin copia, la celda queda vacía");
+});
+
+test("un borrador con copia conserva sus direcciones al guardarse y leerse", () => {
+  const borrador: BorradorCorreo = { id: "cc01", chatId: 1, messageId: 2, to: "a@example.com", cc: "b@example.com, c@example.com", subject: "Impuestos", cuerpo: "Texto", creadoEn: 10 };
+  const leido = rowToBorrador(borradorToRow(borrador));
+  assert.equal(leido?.cc, "b@example.com, c@example.com");
 });
 
 test("ningún rango de fila completa queda fijo en 13 columnas: la última columna sale de HEADERS", async () => {

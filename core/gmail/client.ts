@@ -930,6 +930,8 @@ function textoAHtmlBasico(texto: string): string {
  */
 export function construirMimeConAdjuntos(params: {
   to: string;
+  /** Destinatarios en copia (direcciones separadas por coma). */
+  cc?: string;
   asunto: string;
   cuerpo: string;
   messageIdHeader?: string;
@@ -946,6 +948,7 @@ export function construirMimeConAdjuntos(params: {
 
   const headerLines = [
     `To: ${params.to}`,
+    ...(params.cc?.trim() ? [`Cc: ${params.cc.trim()}`] : []),
     `Subject: ${codificarHeaderAsunto(asuntoConRe)}`,
     `Message-ID: ${params.messageIdPropio}`,
     `MIME-Version: 1.0`,
@@ -1035,6 +1038,8 @@ function base64UrlEncodeBuffer(buf: Buffer): string {
  */
 export interface ParametrosEnvioCorreo {
   to: string;
+  /** Destinatarios en copia (direcciones separadas por coma). */
+  cc?: string;
   asunto: string;
   cuerpo: string;
   /** Identidad estable del efecto aprobado; nunca debe incluir secretos ni el cuerpo. */
