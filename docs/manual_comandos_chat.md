@@ -545,7 +545,7 @@ En cuanto una declaración queda **firmada** (botón «Sí, es la firmada: guard
 - si no existe → propone el gasto único (líneas por cargo, botón «Crear») llevando ya la conciliación planificada: al crearlo, Wobi manda el lote con los cargos localizados en vez de buscar un cargo suelto (columna `conciliacionPlanificadaJSON` de `_gastos_pendientes`);
 - si algún cargo no aparece en el banco, hay varios posibles, varias compras del total, cargos conciliados con otro documento, monedas mezcladas o una moneda sin conciliación múltiple habilitada (hoy EUR; `WOBI_CONCILIACION_MULTIPLE_MONEDAS`), lo dice y no pone botón: con el banco sincronizado basta pedir «aplica la declaración firmada de X». Una declaración de un solo cargo también vale (el plan admite un movimiento cuando viene de una declaración).
 - Mientras los cargos vienen previstos, la propuesta del gasto NO busca ni se bloquea por un cargo suelto del importe total.
-Funciona igual para cualquier persona y empresa (WOBA, eWorks y Footprint tienen plantilla).
+Funciona igual para cualquier persona y empresa (WOBA, eWorks y Footprint tienen plantilla). «Aplica la declaración firmada de X» / «reintenta la declaración de X» → herramienta `aplicar_declaracion_firmada` (también desde `/admin/proponer-accion`): vuelve a mostrar el plan con su botón o cierra la declaración si ya estaba todo conciliado.
 
 
 ## Conversación básica del panel WOBi (13-10-2026)
