@@ -87,6 +87,7 @@ import { obtenerAccionesPendientes } from "../core/jobs/accionesProgramadasStore
 import { startScheduler, obtenerCantidadJobsEnCurso } from "../core/jobs/scheduler";
 import { ejecutarCierreInciertas } from "../core/jobs/cerrarInciertasAntiguas";
 import { ejecutarAuditoriaCargosExactos } from "../core/jobs/auditoriaCargosExactos";
+import { ejecutarAvisoDuplicadosBancarios } from "../core/jobs/duplicadosBancarios";
 import { crearRouterProponerAccion } from "../core/tools/proponerAccionAdmin";
 import { handleEnvioMasivoCallback } from "../core/comunicaciones/envioMasivoTelegram";
 import { programarRevisionEnSecoTrasDespliegue } from "../core/gmail/automatico/revisionEnSeco";
@@ -724,6 +725,23 @@ app.post("/admin/auditoria-cargos-exactos", express.json(), async (req, res) => 
   } catch (error) {
     console.error("[admin/auditoria-cargos-exactos] Error:", error instanceof Error ? error.name : "Error");
     res.status(500).json({ error: "No se pudo completar la auditoría." });
+  }
+});
+
+// Aviso de copias bancarias a demanda (mismo trabajo que el cron de las 10:05). Por defecto SIMULA (no avisa ni marca nada);
+// avisa solo con { "simular": false }. Solo lectura de Holded. Protegida por ADMIN_SECRET en la cabecera `x-admin-secret`.
+app.post("/admin/duplicados-bancarios", express.json(), async (req, res) => {
+  res.set("Cache-Control", "no-store");
+  const esperado = process.env.ADMIN_SECRET;
+  if (!esperado) { res.status(503).json({ error: "ADMIN_SECRET no configurado en el servidor." }); return; }
+  const recibido = Buffer.from(String(req.get("x-admin-secret") ?? "")), correcto = Buffer.from(esperado);
+  if (recibido.length !== correcto.length || !timingSafeEqual(recibido, correcto)) { res.status(403).json({ error: "Secreto de administración inválido o ausente." }); return; }
+  try {
+    const r = await ejecutarAvisoDuplicadosBancarios({ simular: (req.body as { simular?: unknown } | undefined)?.simular !== false });
+    res.json({ simulado: r.simulado, cuentasRevisadas: r.cuentasRevisadas, nuevos: r.nuevos.length, lotes: r.lotes.map((l) => ({ clave: l.clave, empresa: l.empresa, cuenta: l.cuenta, desfaseSaldo: l.desfaseSaldo, copias: l.pares.length, pendientes: l.pares.filter((p) => p.estadoCopia !== "reconciled" && p.estadoCopia !== "forced_reconciled").length })) });
+  } catch (error) {
+    console.error("[admin/duplicados-bancarios] Error:", error instanceof Error ? error.name : "Error");
+    res.status(500).json({ error: "No se pudo completar la revisión." });
   }
 });
 

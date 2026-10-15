@@ -10,6 +10,7 @@ import { revisarEstructuraCashflow } from "./revisarEstructuraCashflow";
 import { revisarAdjuntosDuplicados } from "./revisarAdjuntosDuplicados";
 import { ejecutarCierreInciertas } from "./cerrarInciertasAntiguas";
 import { ejecutarAuditoriaCargosExactos } from "./auditoriaCargosExactos";
+import { ejecutarAvisoDuplicadosBancarios } from "./duplicadosBancarios";
 import { ejecutarSeguimientoComunicaciones } from "./seguimientoComunicaciones";
 import { ejecutarSolicitudDatosFaltantes } from "./solicitarDatosFaltantes";
 import { revisarAplazamientoImpuestos } from "./revisarAplazamientoImpuestos";
@@ -290,6 +291,16 @@ export function startScheduler(): void {
     { timezone: TIMEZONE }
   );
   console.log(`[scheduler] auditoriaCargosExactos programado: laborables 8:45 (${TIMEZONE})`);
+
+  // Copias de movimientos que el agregador del banco importa de golpe (solo lectura; avisa una vez por lote). Tras cerrar la sincronización de las 9:45.
+  cron.schedule(
+    "5 10 * * 1-5",
+    () => {
+      ejecutarSinSolapamiento("duplicadosBancarios", () => ejecutarAvisoDuplicadosBancarios());
+    },
+    { timezone: TIMEZONE }
+  );
+  console.log(`[scheduler] duplicadosBancarios programado: laborables 10:05 (${TIMEZONE})`);
 
   // Lo que han enviado o contestado las personas a las que se escribió con un correo a una audiencia (solo lectura; solo avisa si hay novedades).
   cron.schedule(

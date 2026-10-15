@@ -589,6 +589,7 @@ secreto de administración (`ADMIN_SECRET`, cabecera `x-admin-secret` salvo dond
   La escritura la sigue haciendo el botón. (PR #480.)
 - `POST /admin/cerrar-inciertas` — cierre de operaciones inciertas antiguas; simula por defecto (`{"simular": false}` para cerrar). (PR #477.)
 - `POST /admin/auditoria-cargos-exactos` — auditoría de cargos exactos no ofrecidos; simula por defecto. (PR #479.)
+- `POST /admin/duplicados-bancarios` — aviso de lotes de copias bancarias (mismo trabajo que el cron laborable de las 10:05); simula por defecto. Ver `docs/duplicados-bancarios.md`.
 - `POST /admin/restaurar-comprobante` — reposición de comprobantes del manifiesto en compras sin adjuntos. (PR #476.)
 - `POST /admin/run-gmail-check?secret=…` — lanza la revisión de correo como `/revisarcorreo`.
 - `POST /admin/run-holded-check`, `/admin/run-holded-check-preliminar`, `/admin/run-fiscal-check`, `/admin/run-costos-check`,
