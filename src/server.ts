@@ -62,6 +62,7 @@ import { notificarSolicitudAcceso, handleAuthCallback } from "../core/telegram/a
 import { handleCallbackQuery } from "../core/telegram/callbackHandler";
 import { handleSegurosCambioCallback } from "../core/seguros/agente/callbackSeguros";
 import { handleIncomingFile } from "../core/documental/receiveFile";
+import { prepararEntradaArchivoConOrden } from "../core/telegram/entradaArchivoConOrden";
 import { handleSoportesCallback } from "../core/soportes/soportesTelegram";
 import { handleConciliarSinSoporteCallback } from "../core/holded/conciliarSinSoporte";
 import { handleSoportesModoCallback, iniciarSoportes } from "../core/soportes/comandoSoportes";
@@ -2381,12 +2382,18 @@ async function procesarUpdateTelegram(update: TelegramUpdate): Promise<void> {
     // "recuerda esto" (parece_intencion_de_captura) y dispara el mismo
     // flujo de transcripción + guardado que ya existía para correos con
     // adjuntos, en vez de un atajo aparte que nunca leía el archivo.
-    try {
-      await handleIncomingFile(update.message);
-    } catch (error) {
-      console.error("Error procesando archivo entrante de Telegram:", error);
+    // Si el pie del archivo es una ORDEN para el asistente (no una descripción), se sigue por el chat como texto, igual que una nota de voz.
+    const comoOrden = await prepararEntradaArchivoConOrden(update);
+    if (comoOrden) {
+      update = comoOrden;
+    } else {
+      try {
+        await handleIncomingFile(update.message);
+      } catch (error) {
+        console.error("Error procesando archivo entrante de Telegram:", error);
+      }
+      return;
     }
-    return;
   }
 
   const incoming = parseIncomingUpdate(update);

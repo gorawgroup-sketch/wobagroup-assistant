@@ -24,6 +24,8 @@ export interface BorradorCorreo {
   adjuntosDrive?: Array<{ fileId: string; nombre: string; mimeType: string }>;
   /** Declaración de gastos sin soporte que viaja en este borrador: al enviarse, pasa a «enviada». */
   declaracionId?: string;
+  /** Destinatarios en copia (direcciones separadas por coma). */
+  cc?: string;
 }
 
 export interface CorrelacionBorradorCorreo {
@@ -65,6 +67,7 @@ const HEADERS = [
   "unidadColaId",
   "adjuntosDriveJson",
   "declaracionId",
+  "cc",
 ];
 /// Última columna real de la pestaña, derivada de HEADERS. Todos los rangos de lectura y escritura
 /// deben usarla: el 12-10-2026 el borrador de la declaración de German perdió el adjunto porque los
@@ -157,6 +160,7 @@ export function rowToBorrador(row: unknown[]): BorradorCorreo | null {
     unidadColaId: row[12] ? String(row[12]) : undefined,
     adjuntosDrive: adjuntosDesdeCelda(row[13]),
     declaracionId: row[14] ? String(row[14]) : undefined,
+    cc: row[15] ? String(row[15]) : undefined,
   };
 }
 
@@ -188,6 +192,7 @@ export function borradorToRow(b: BorradorCorreo): (string | number)[] {
     b.unidadColaId ?? "",
     b.adjuntosDrive?.length ? JSON.stringify(b.adjuntosDrive) : "",
     b.declaracionId ?? "",
+    b.cc ?? "",
   ];
 }
 

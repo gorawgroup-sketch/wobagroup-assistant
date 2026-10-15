@@ -910,6 +910,7 @@ async function handleDraftCallbackInterno(callback: TelegramCallbackQuery): Prom
       : undefined;
     const enviado = await enviarCorreo({
       to: borrador.to,
+      cc: borrador.cc,
       asunto: borrador.subject,
       cuerpo: borrador.cuerpo,
       idempotencyKey: `borrador:${borrador.id}`,
@@ -928,7 +929,7 @@ async function handleDraftCallbackInterno(callback: TelegramCallbackQuery): Prom
     const consumido = await consumirBorradorCorreo(id);
     if (!consumido) return;
 
-    await editTelegramMessage(consumido.chatId, consumido.messageId, `📤 Enviado a ${consumido.to}.`, []).catch(
+    await editTelegramMessage(consumido.chatId, consumido.messageId, `📤 Enviado a ${consumido.to}${consumido.cc ? ` (con copia a ${consumido.cc})` : ""}.`, []).catch(
       (error) => console.error("[emailCallbackHandler] No se pudo reflejar el envío en Telegram (no crítico):", error)
     );
     const identidad = identidadCorreoDeBorrador(consumido);
@@ -1049,7 +1050,7 @@ export async function continuarConEdicionBorrador(chatId: number, borradorId: st
       return;
     }
 
-    const texto = [`✉️ Borrador actualizado — para ${borrador.to}:`, "", cuerpoActualizado].join("\n");
+    const texto = [`✉️ Borrador actualizado — para ${borrador.to}${borrador.cc ? ` (con copia a ${borrador.cc})` : ""}:`, "", cuerpoActualizado].join("\n");
 
     const messageId = await sendTelegramMessageWithButtons(chatId, texto, [
       [

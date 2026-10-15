@@ -19,7 +19,7 @@ const FRIENDLY_TYPES: Record<string, string> = {
   "application/vnd.ms-excel": "Excel (.xls)",
 };
 
-function tipoAmigable(mimeType: string | undefined): string {
+export function tipoAmigable(mimeType: string | undefined): string {
   if (!mimeType) return "Archivo";
   return FRIENDLY_TYPES[mimeType] ?? mimeType;
 }
@@ -41,7 +41,7 @@ function extensionDesdeMime(mimeType: string | undefined): string {
   return partes.length === 2 ? `.${partes[1].split("+")[0]}` : "";
 }
 
-interface ArchivoEntrante {
+export interface ArchivoEntrante {
   fileId: string;
   nombreOriginal?: string;
   mimeType?: string;
@@ -52,7 +52,7 @@ interface ArchivoEntrante {
  * Extrae el archivo adjunto de un mensaje de Telegram (documento o foto),
  * si lo trae. Para fotos, usa la resolución más grande (último elemento).
  */
-function extraerArchivo(message: TelegramMessage): ArchivoEntrante | null {
+export function extraerArchivo(message: TelegramMessage): ArchivoEntrante | null {
   if (message.document) {
     return {
       fileId: message.document.file_id,

@@ -357,6 +357,14 @@ Graba una nota con el micrófono de Telegram (hasta tres minutos). Wobi responde
 transcrito y sigue por el mismo flujo que un mensaje escrito; todo lo que pide confirmación con botón la sigue
 pidiendo. Si la nota no se puede leer, lo dice y no ejecuta nada. Detalle en `docs/notas-voz-telegram.md`.
 
+### Archivo con una orden en el pie (15-10-2026)
+
+Si mandas una foto o un documento y en el texto que lo acompaña **pides algo** («considerando este cuadro envíale un correo a Yanessy con copia a Alberto», «calcula el total de esto», «anótalo en el cashflow»), Wobi **lee el archivo y sigue tu orden por el chat**, igual que si la hubieras escrito, con el contenido leído a mano. Te avisa con «Leí el archivo y entendí que me pides una acción». Si el texto solo **describe** el archivo («factura de Uber», «para archivar», «procesa este gasto», «captura»), todo sigue como siempre: propuesta de carpeta, gasto o conocimiento. Con el modo `/conocimiento` activo y con los CSV (extractos de Revolut) no se interpreta el texto. Ante cualquier duda o fallo de lectura el archivo sigue el camino de siempre: nunca se pierde. Código: `core/telegram/entradaArchivoConOrden.ts` (hermano de las notas de voz).
+
+### Correos con copia (15-10-2026)
+
+Al pedir un correo «con copia a…», el borrador muestra «Con copia a: …» y al pulsar «Enviar así» sale con esas direcciones en el encabezado Cc. Solo se aceptan direcciones de correo reales (nunca un nombre): si falta alguna, Wobi la busca en el directorio de personas o te pregunta.
+
 ### «❌ Cancelar» en una propuesta de gasto que viene de un correo
 
 Queda registrado que el operador decidió NO registrar ese comprobante (por correo y adjunto). En las siguientes

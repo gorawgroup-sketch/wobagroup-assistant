@@ -12,7 +12,7 @@ export function botonesBorradorCorreo(id: string): InlineKeyboardButton[][] {
 
 export function textoBorradorCorreo(b: BorradorCorreo, encabezado?: string): string {
   const adjuntos = b.adjuntosDrive?.length ? [`📎 Adjunto: ${b.adjuntosDrive.map((a) => a.nombre).join(", ")}`] : [];
-  return [...(encabezado ? [encabezado, ""] : []), `✉️ Borrador de correo para ${b.to}:`, `Asunto: ${b.subject}`, ...adjuntos, "", b.cuerpo].join("\n");
+  return [...(encabezado ? [encabezado, ""] : []), `✉️ Borrador de correo para ${b.to}:`, ...(b.cc ? [`Con copia a: ${b.cc}`] : []), `Asunto: ${b.subject}`, ...adjuntos, "", b.cuerpo].join("\n");
 }
 
 /**
