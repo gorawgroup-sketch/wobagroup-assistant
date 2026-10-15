@@ -24,6 +24,8 @@ export const HERRAMIENTAS_PERMITIDAS: ReadonlySet<string> = new Set([
   "solicitar_datos_faltantes_a_creadores",
   // Prepara la conciliación de una compra ya registrada con su cargo: manda la pregunta «Conciliar con #1» (Sí/No); escribe solo el botón.
   "conciliar_movimiento_bancario",
+  // Varios cargos para una compra: manda el desglose con «Confirmar conciliación múltiple» / Cancelar; escribe solo el botón.
+  "conciliar_multiples_movimientos_bancarios",
 ]);
 
 function secretoValido(recibido: string | undefined, esperado: string): boolean {
