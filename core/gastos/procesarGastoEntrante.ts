@@ -686,6 +686,9 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
   let candidatos: Awaited<ReturnType<typeof verificarDuplicadoGastoEstricto>>["compras"] =
     candidatoRecuperacion ? [candidatoRecuperacion] : [];
   let movimientosYaConciliados: Awaited<ReturnType<typeof verificarDuplicadoGastoEstricto>>["movimientosConciliados"] = [];
+  // Cargos ya previstos (declaración firmada): el gasto es la suma de varios cargos, así que no se busca ni se bloquea por un
+  // cargo suelto del importe total; la conciliación la propone el lote planificado al crear la compra.
+  const buscarCargoSuelto = !entrada.conciliacionPlanificada;
   try {
     if (!candidatoRecuperacion) {
       const verificacion = await verificarDuplicadoGastoEstricto(empresa, {
@@ -696,7 +699,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
         numeroDocumento: datos.numeroDocumento,
       });
       candidatos = verificacion.compras;
-      movimientosYaConciliados = verificacion.movimientosConciliados;
+      movimientosYaConciliados = buscarCargoSuelto ? verificacion.movimientosConciliados : [];
     }
     // Si hay candidatoRecuperacion, la identidad durable ya fija el gasto
     // exacto. Una búsqueda genérica podría ocultarlo (tickets) o reemplazarlo
@@ -1195,7 +1198,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     // Si Holded falla a media búsqueda no se puede afirmar «no hay cargo por ese importe»; tampoco se ofrece uno mayor.
     let busquedaCargoCompleta = true;
     try {
-      const candidatosMov = await buscarMovimientoSimilar(
+      const candidatosMov = !buscarCargoSuelto ? [] : await buscarMovimientoSimilar(
         empresa,
         { monto: montoParaHolded, fecha: datos.fecha, moneda: monedaParaHolded, proveedor: datos.proveedor, concepto: datos.concepto, nombresAlternativos: datos.nombresEnDocumento, incluirPorConfirmar: true, traza: trazaBusqueda },
         toleranciaMov
@@ -1234,7 +1237,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
         // inteligencia... para llegar a una CONCLUSIÓN y recomendar un gasto
         // aproximado", pedido explícito — y se avisa que hay otros por si
         // ese no es el correcto.
-        const candidatosAprox = await buscarMovimientoAproximado(empresa, {
+        const candidatosAprox = !buscarCargoSuelto ? [] : await buscarMovimientoAproximado(empresa, {
           monto: montoParaHolded,
           fecha: datos.fecha,
           moneda: monedaParaHolded,
@@ -1259,7 +1262,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     // #N", porque la tasa exacta aplicada por el banco puede incluir spread.
     const otrasMonedas = Array.from(monedasReales).filter((m) => m !== monedaParaHolded);
     let movimientosTipoCambio: Awaited<ReturnType<typeof buscarMovimientosPorTipoCambio>> = [];
-    if (!movimientoBancario && !movimientoAproximado && candidatosMovAmbiguos.length === 0 && otrasMonedas.length > 0) {
+    if (buscarCargoSuelto && !movimientoBancario && !movimientoAproximado && candidatosMovAmbiguos.length === 0 && otrasMonedas.length > 0) {
       try {
         movimientosTipoCambio = await buscarMovimientosPorTipoCambio(
           empresa,
@@ -1285,7 +1288,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     // mal. Solo se prueba cuando la búsqueda normal (exacta y aproximada) ya no encontró nada —
     // nunca reemplaza ni concilia sola, solo avisa para que se confirme antes de crear el gasto.
     let movimientoMonedaAlternativa: Awaited<ReturnType<typeof buscarMovimientoEnMonedaAlternativa>> | undefined;
-    if (!movimientoBancario && !movimientoAproximado && candidatosMovAmbiguos.length === 0 && movimientosTipoCambio.length === 0) {
+    if (buscarCargoSuelto && !movimientoBancario && !movimientoAproximado && candidatosMovAmbiguos.length === 0 && movimientosTipoCambio.length === 0) {
       if (otrasMonedas.length > 0) {
         try {
           movimientoMonedaAlternativa = await buscarMovimientoEnMonedaAlternativa(
@@ -1302,7 +1305,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     // Último recurso (cargoMayor.ts, caso Go Rent A Car): un cargo MAYOR del mismo proveedor del que este gasto puede
     // ser solo una parte. Se ofrece como opción a elegir; nunca se recomienda ni se concilia solo.
     let movimientosCargoMayor: Awaited<ReturnType<typeof buscarCargoMayorDelProveedor>> = [];
-    if (!movimientoBancario && !movimientoAproximado && candidatosMovAmbiguos.length === 0 && movimientosTipoCambio.length === 0 &&
+    if (buscarCargoSuelto && !movimientoBancario && !movimientoAproximado && candidatosMovAmbiguos.length === 0 && movimientosTipoCambio.length === 0 &&
         !movimientoMonedaAlternativa && busquedaCargoCompleta && !esProveedorNoIdentificado(datos.proveedor)) {
       try {
         movimientosCargoMayor = await buscarCargoMayorDelProveedor(

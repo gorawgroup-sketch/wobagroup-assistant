@@ -28,6 +28,11 @@ export function emparejarCargo(c: CargoDeclarado, movimientos: MovimientoBanco[]
   const porImporte = movimientos.filter((m) => m.moneda === c.moneda && m.importe < 0 && mismoImporte(m.importe, c.valor) && diasEntre(m.fecha, c.fecha) <= DIAS_TOLERANCIA_FECHA);
   let candidatos = porImporte;
   if (candidatos.length > 1) {
+    // Un cargo libre gana a uno ya conciliado con el mismo importe y fecha (el conciliado es de otro documento).
+    const libres = candidatos.filter((m) => m.estado === "pending" && m.conciliado === 0);
+    if (libres.length >= 1) candidatos = libres;
+  }
+  if (candidatos.length > 1) {
     const porNombre = candidatos.filter((m) => describeA(c.lugar, m.descripcion));
     if (porNombre.length >= 1) candidatos = porNombre;
   }
@@ -46,7 +51,7 @@ export function emparejarCargo(c: CargoDeclarado, movimientos: MovimientoBanco[]
 export interface LectorBanco { movimientos(empresa: Empresa, moneda: string, desde: string, hasta: string): Promise<MovimientoBanco[]> }
 
 async function leerMovimientosReales(empresa: Empresa, moneda: string, desde: string, hasta: string): Promise<MovimientoBanco[]> {
-  const cuentas = (await listTreasuryAccounts(empresa)).filter((c) => (c.type === "bank" || c.type === "card") && (c.currency ?? "EUR").toUpperCase() === moneda);
+  const cuentas = (await listTreasuryAccounts(empresa)).filter((c) => (c.type === "bank" || c.type === "card") && c.archived !== true && (c.currency ?? "EUR").toUpperCase() === moneda);
   const salida: MovimientoBanco[] = [];
   for (const cuenta of cuentas) {
     const movs = await listBankMovements(empresa, cuenta.id, desde, hasta);

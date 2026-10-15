@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { decidirAccion, esCompraDeLaDeclaracion, planificarAplicacion, textoPlan, totalDeclarado, type CompraTotal } from "./aplicarDeclaracion";
+import { decidirAccion, esCompraDeLaDeclaracion, pagadoPorLaCompra, planificarAplicacion, textoPlan, totalDeclarado, type CompraTotal } from "./aplicarDeclaracion";
 import type { CargoDeclarado, Declaracion } from "./declaracionStore";
 import type { CargoLocalizado, MovimientoBanco } from "./localizarCargos";
 
@@ -31,7 +31,16 @@ test("decidirAccion: todos localizados → conciliar la compra existente o crear
   const r = decidirAccion([compra()], unoSin);
   assert.equal(r.accion, "bloqueado"); assert.match(r.bloqueos[0], /Rist Pizz Tovo/);
   assert.equal(decidirAccion([compra(), compra({ id: "otra" })], ok).accion, "bloqueado");
-  assert.equal(decidirAccion([compra()], ok.map((x) => ({ ...x, situacion: "ya_conciliado" as const }))).accion, "ya_resuelta");
+  const todosConciliados = ok.map((x) => ({ ...x, situacion: "ya_conciliado" as const }));
+  const pagos = ok.map((x, i) => ({ id: `p${i}`, centimos: Math.round(x.cargo.valor * 100), accountId: "acc", fecha: x.cargo.fecha }));
+  assert.equal(decidirAccion([compra()], todosConciliados, pagos).accion, "ya_resuelta", "conciliados CON la compra del total");
+  const r2 = decidirAccion([compra()], todosConciliados, pagos.slice(1));
+  assert.equal(r2.accion, "bloqueado"); assert.match(r2.bloqueos[0], /con otro documento/);
+  assert.equal(pagadoPorLaCompra(todosConciliados[0], pagos), true);
+  // Monedas: mezcladas o no habilitadas → bloqueado (la conciliación múltiple solo está habilitada en EUR por defecto).
+  const usd = loc(cargo("u", { moneda: "USD", lugar: "Uber", valor: 5 }), { ...mov("mu", "2026-09-07", "Uber", -5), moneda: "USD" });
+  assert.match(decidirAccion([], [...ok, usd]).bloqueos[0], /mezclan monedas/);
+  assert.match(decidirAccion([], [usd]).bloqueos[0], /no está habilitada en USD/);
 });
 
 test("el plan lee Holded y el banco una vez, suma el total y el texto dice gasto único + cargos con su movimiento", async () => {
@@ -39,6 +48,7 @@ test("el plan lee Holded y el banco una vez, suma el total y el texto dice gasto
   const plan = await planificarAplicacion(d, {
     compras: async (_e, _d, total, moneda) => { assert.equal(total, 167.65); assert.equal(moneda, "EUR"); return [compra()]; },
     cargos: async (_e, cargos) => cargos.map((c, i) => loc(c, mov(`m${i}`, c.fecha, c.lugar, -c.valor))),
+    pagos: async () => { throw new Error("no debe leer pagos si ningún cargo está conciliado"); },
   });
   assert.equal(plan.accion, "conciliar_existente");
   assert.equal(plan.compra?.id, "6ad0c5d3");

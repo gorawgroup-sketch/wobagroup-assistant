@@ -1,11 +1,11 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { descargarArchivoDrive } from "../../drive/client";
 import { procesarGastoEntrante } from "../../gastos/procesarGastoEntrante";
 import { normalizarBusqueda } from "../../gastos/reenviarPreguntaPendiente";
 import { buscarComprasPorMonto } from "../../holded/write";
 import type { Empresa } from "../../holded/client";
-import type { ConciliacionPlanificada, PlanConciliacion, ReferenciaMovimiento } from "../../holded/conciliacionMultiple/model";
+import { monedasPermitidasConciliacionMultiple, type ConciliacionPlanificada, type PagoExacto, type PlanConciliacion, type ReferenciaMovimiento } from "../../holded/conciliacionMultiple/model";
 import { sendTelegramMessage, sendTelegramMessageWithButtons } from "../../telegram/client";
 import { actualizarDeclaracion, obtenerDeclaracion, type CargoDeclarado, type Declaracion } from "./declaracionStore";
 import { localizarMovimientosDeclarados, type CargoLocalizado } from "./localizarCargos";
@@ -29,6 +29,8 @@ export interface PlanAplicacion { declaracion: Declaracion; total: number; moned
 export interface LectorPlan {
   compras(empresa: Empresa, d: Declaracion, total: number, moneda: string): Promise<CompraTotal[]>;
   cargos(empresa: Empresa, cargos: CargoDeclarado[]): Promise<CargoLocalizado[]>;
+  /** Pagos ya aplicados a la compra del total (para comprobar que los cargos conciliados lo están CON ESA compra). */
+  pagos(empresa: Empresa, compraId: string): Promise<PagoExacto[]>;
 }
 
 export const numeroDocumentoDeclaracion = (d: Pick<Declaracion, "id">): string => `DECL-${d.id}`;
@@ -49,16 +51,32 @@ const lectorReal: LectorPlan = {
     return compras.filter((c) => esCompraDeLaDeclaracion(c, d)).map((c) => ({ id: c.id, contactName: c.contactName, total: c.total, fecha: c.fecha, documentNumber: c.documentNumber }));
   },
   cargos: (empresa, cargos) => localizarMovimientosDeclarados(empresa, cargos),
+  pagos: async (empresa, compraId) => {
+    const { HoldedConciliacionAdapter } = await import("../../holded/conciliacionMultiple/holdedAdapter");
+    return (await new HoldedConciliacionAdapter().compra(empresa, compraId)).pagos;
+  },
 };
 
+/** Un cargo ya conciliado cuenta como resuelto solo si la compra del total tiene un pago con su importe, cuenta y fecha. */
+export function pagadoPorLaCompra(x: CargoLocalizado, pagos: PagoExacto[]): boolean {
+  if (!x.movimiento) return false;
+  const centimos = Math.round(Math.abs(x.movimiento.importe) * 100);
+  return pagos.some((p) => p.centimos === centimos && p.accountId === x.movimiento!.accountId && p.fecha === x.movimiento!.fecha);
+}
+
 /** Lógica pura: qué toca hacer con lo que devolvieron Holded y el banco. */
-export function decidirAccion(compras: CompraTotal[], cargos: CargoLocalizado[]): { accion: AccionPlan; bloqueos: string[] } {
+export function decidirAccion(compras: CompraTotal[], cargos: CargoLocalizado[], pagosDeLaCompra: PagoExacto[] = []): { accion: AccionPlan; bloqueos: string[] } {
   const bloqueos: string[] = [];
+  const monedas = [...new Set(cargos.map((x) => x.cargo.moneda.toUpperCase()))];
+  if (monedas.length > 1) bloqueos.push(`los cargos mezclan monedas (${monedas.join(", ")}): un solo gasto por el total exige una sola moneda; separa la declaración por moneda`);
+  const permitidas = monedasPermitidasConciliacionMultiple();
+  for (const m of monedas) if (!permitidas.includes(m)) bloqueos.push(`la conciliación múltiple no está habilitada en ${m} (hoy: ${permitidas.join(", ")})`);
   if (compras.length > 1) bloqueos.push(`hay ${compras.length} compras posibles del total en Holded (${compras.map((c) => `${c.contactName} ${c.fecha} ${c.documentNumber ?? "sin número"}`).join(" / ")}): dime cuál es`);
   for (const x of cargos) if (x.situacion === "no_encontrado" || x.situacion === "ambiguo") bloqueos.push(`${x.cargo.fecha} · ${x.cargo.lugar} · ${x.cargo.valor.toFixed(2)} ${x.cargo.moneda}: ${x.situacion === "ambiguo" ? "varios cargos posibles" : "sin cargo en el banco"} (${x.detalle ?? ""})`);
   if (bloqueos.length) return { accion: "bloqueado", bloqueos };
-  if (compras.length === 1 && cargos.every((x) => x.situacion === "ya_conciliado")) return { accion: "ya_resuelta", bloqueos };
-  if (cargos.some((x) => x.situacion === "ya_conciliado")) return { accion: "bloqueado", bloqueos: cargos.filter((x) => x.situacion === "ya_conciliado").map((x) => `${x.cargo.fecha} · ${x.cargo.lugar} · ${x.cargo.valor.toFixed(2)}: ${x.detalle ?? "ya conciliado"}`) };
+  const conciliados = cargos.filter((x) => x.situacion === "ya_conciliado");
+  if (compras.length === 1 && conciliados.length === cargos.length && cargos.every((x) => pagadoPorLaCompra(x, pagosDeLaCompra))) return { accion: "ya_resuelta", bloqueos };
+  if (conciliados.length) return { accion: "bloqueado", bloqueos: conciliados.map((x) => `${x.cargo.fecha} · ${x.cargo.lugar} · ${x.cargo.valor.toFixed(2)}: ${pagadoPorLaCompra(x, pagosDeLaCompra) ? "ya conciliado con el gasto del total" : (x.detalle ?? "ya conciliado") + " (con otro documento: revísalo en Holded)"}`) };
   return { accion: compras.length === 1 ? "conciliar_existente" : "crear_y_conciliar", bloqueos };
 }
 
@@ -66,7 +84,8 @@ export async function planificarAplicacion(d: Declaracion, lector: LectorPlan = 
   const moneda = (d.cargos[0]?.moneda ?? "EUR").toUpperCase();
   const total = totalDeclarado(d.cargos);
   const [compras, cargos] = await Promise.all([lector.compras(d.empresa as Empresa, d, total, moneda), lector.cargos(d.empresa as Empresa, d.cargos)]);
-  const { accion, bloqueos } = decidirAccion(compras, cargos);
+  const pagos = compras.length === 1 && cargos.some((x) => x.situacion === "ya_conciliado") ? await lector.pagos(d.empresa as Empresa, compras[0].id) : [];
+  const { accion, bloqueos } = decidirAccion(compras, cargos, pagos);
   return { declaracion: d, total, moneda, compra: compras.length === 1 ? compras[0] : undefined, comprasPosibles: compras, cargos, accion, bloqueos };
 }
 
@@ -144,7 +163,9 @@ export async function aplicarDeclaracion(chatId: number, d: Declaracion): Promis
   }
   const firmada = await descargarFirmada(d);
   const fecha = [...d.cargos].map((c) => c.fecha).sort().pop() ?? new Date().toISOString().slice(0, 10);
-  const salida = await procesarGastoEntrante({
+  let salida: Awaited<ReturnType<typeof procesarGastoEntrante>>;
+  try {
+    salida = await procesarGastoEntrante({
     chatId, rutaLocal: firmada.rutaLocal, nombreArchivoOriginal: firmada.nombre, mimeType: firmada.mimeType,
     datos: {
       esFacturaOGasto: true, proveedor: d.titular, monto: plan.total, moneda: plan.moneda, fecha, numeroDocumento: numeroDocumentoDeclaracion(d),
@@ -156,6 +177,18 @@ export async function aplicarDeclaracion(chatId: number, d: Declaracion): Promis
     },
     conciliacionPlanificada: planificada,
   });
+  } catch (error) {
+    await unlink(firmada.rutaLocal).catch(() => undefined);
+    throw error;
+  }
+  if (salida !== "propuesta_enviada" && salida !== "propuesta_pendiente_existente") {
+    // La propuesta no llegó a mostrarse con botones (duplicado o datos pendientes): no se marca nada y se explica.
+    await unlink(firmada.rutaLocal).catch(() => undefined);
+    const motivo = salida === "propuesta_duplicada"
+      ? "Holded ya tiene este gasto o uno igual (ver el aviso de arriba): pide «aplica la declaración firmada» otra vez para conciliarlo con la compra existente"
+      : "el gasto quedó pendiente de datos (ver el aviso de arriba); resuélvelo y pide «aplica la declaración firmada» otra vez";
+    return { modo: "bloqueado", bloqueos: [motivo] };
+  }
   await marcarAplicada(d, "", plan.cargos, "propuesto", `gasto único de ${plan.total.toFixed(2)} ${plan.moneda} propuesto con la conciliación de ${plan.cargos.length} cargo(s) planificada (${salida})`);
   return { modo: "gasto_propuesto", cargos: plan.cargos.length, salida };
 }

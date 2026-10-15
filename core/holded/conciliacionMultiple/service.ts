@@ -60,7 +60,7 @@ export class ServicioConciliacionMultiple {
         if (claveMovimiento(m) !== claveMovimiento(ref) || m.fecha !== ref.fecha) throw new Error("El movimiento devuelto no coincide con la selección.");
         movimientos.push(m);
       }
-      validarSeleccion(compra, movimientos, { parcial: datos.parcial === true });
+      validarSeleccion(compra, movimientos, { parcial: datos.parcial === true, unico: Boolean(datos.origen) });
       await this.holded.validarClasificacion(datos.empresa, compra.id);
       const plan: PlanConciliacion = {
         id: randomUUID().slice(0, 18), empresa: datos.empresa, chatId: datos.chatId, creadoEn: this.ahora(),

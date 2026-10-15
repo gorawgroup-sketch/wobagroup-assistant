@@ -3591,7 +3591,7 @@ async function crearGastoYReportar(
 
   // Con cargos ya previstos (declaración firmada) se concilia siempre en línea: «Crear (sin conciliar)» no deja el lote colgado.
   if (conciliarInline || propuesta.conciliacionPlanificada) {
-    if (movimientoObjetivo) {
+    if (movimientoObjetivo && !propuesta.conciliacionPlanificada) {
       // Hallazgo real de auditoría xhigh: esta es la MISMA clase de ambigüedad
       // real que gasto_conciliar_elegir aprende de (movimientoObjetivo viene
       // de PropuestaGasto.movimientosAmbiguos, resuelta por Carlos vía el

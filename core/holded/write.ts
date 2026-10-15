@@ -1774,7 +1774,7 @@ export async function buscarComprasPorMonto(
     if (cursor) params.set("cursor", cursor);
 
     const data = (await holdedWriteCall(empresa, "GET", `/purchases?${params.toString()}`)) as {
-      items?: Array<{ id: string; contact_name?: string; date?: string; total?: string; description?: string; currency?: string }>;
+      items?: Array<{ id: string; contact_name?: string; date?: string; total?: string; description?: string; currency?: string; document_number?: string | null }>;
       cursor?: string;
       has_more?: boolean;
     };
@@ -1794,6 +1794,7 @@ export async function buscarComprasPorMonto(
         contactName: item.contact_name,
         fecha: item.date ?? "",
         total,
+        documentNumber: item.document_number || undefined,
         descripcion: item.description ?? "",
         moneda: (item.currency ?? moneda ?? "EUR").toUpperCase(),
       });

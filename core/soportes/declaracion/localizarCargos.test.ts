@@ -18,6 +18,8 @@ test("empareja por importe exacto y fecha cercana; desempata por el nombre del c
   assert.equal(emparejarCargo(c("Desconocido", 9, "2026-09-07"), banco).situacion, "ambiguo", "dos de 9 € y ninguno nombra el comercio");
   assert.equal(emparejarCargo(c("Rosso Brera", 80, "2026-09-07"), [m("c", "Rosso Brera", -80, "2026-09-07", { estado: "reconciled", conciliado: 80 })]).situacion, "ya_conciliado");
   assert.equal(emparejarCargo(c("Uber", 9, "2026-09-07", "USD"), banco).situacion, "no_encontrado", "otra moneda no se mezcla");
+  const libreYConciliado = [m("c1", "Rosso Brera", -80, "2026-09-07", { estado: "reconciled", conciliado: 80 }), m("c2", "Rosso Brera", -80, "2026-09-07")];
+  assert.equal(emparejarCargo(c("Rosso Brera", 80, "2026-09-07"), libreYConciliado).movimiento?.movementId, "c2", "el cargo libre gana al ya conciliado");
 });
 
 test("lee el banco una vez por moneda con la ventana que cubre todos los cargos", async () => {
