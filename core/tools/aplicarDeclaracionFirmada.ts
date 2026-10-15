@@ -35,7 +35,7 @@ export const aplicarDeclaracionFirmadaTool: ToolDefinition = {
     try {
       let d = id ? await obtenerDeclaracion(id) : undefined;
       if (id && !d) return `No existe la declaración ${id}.`;
-      if (!d) d = seleccionarDeclaracionPendiente(await listarDeclaraciones({ estados: ["firmada"] }), { empresa, titular });
+      if (!d) d = seleccionarDeclaracionPendiente(await listarDeclaraciones({ estados: ["firmada"] }), { empresa, titular }, ["firmada"]);
       if (d.estado !== "firmada") return `La declaración de ${d.titular} está «${d.estado}», no «firmada»: no hay nada que aplicar.`;
       await proponerAplicacion(chatId, d);
       return `Listo — el plan de la declaración firmada de ${d.titular} (${d.empresa}, ${d.cargos.length} cargo(s)) ya se mostró en el chat: si procede, con el botón «Aplicar»; si estaba todo conciliado, queda marcada como aplicada. No repitas el mensaje: dile al usuario que lo revise arriba.`;
