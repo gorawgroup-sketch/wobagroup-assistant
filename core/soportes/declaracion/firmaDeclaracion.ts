@@ -116,8 +116,10 @@ export async function handleDeclaracionCallback(callback: TelegramCallbackQuery)
     if (messageId) await editTelegramMessage(chatId, messageId, `🔄 Aplicando la declaración firmada de ${d.titular} como soporte en Holded…`, []).catch(() => undefined);
     try {
       const r = await aplicarDeclaracion(chatId, d);
-      const texto = `✅ Declaración de ${d.titular}: ${r.adjuntados} gasto(s) existentes con la declaración adjunta; ${r.propuestos} gasto(s) nuevos propuestos arriba con sus botones` +
-        (r.fallos.length ? `; ${r.fallos.length} con fallo:\n  • ${r.fallos.join("\n  • ")}` : ".");
+      const texto = r.modo === "conciliacion_propuesta" ? `✅ Declaración de ${d.titular}: desglose de la conciliación de sus ${r.cargos} cargo(s) con el gasto del total enviado arriba (plan ${r.planId}); falta «Confirmar conciliación múltiple».`
+        : r.modo === "gasto_propuesto" ? `✅ Declaración de ${d.titular}: gasto único propuesto arriba con sus botones; al crearlo te mando la conciliación con sus ${r.cargos} cargo(s).`
+        : r.modo === "ya_resuelta" ? `✅ Declaración de ${d.titular}: todo estaba ya conciliado; queda marcada como aplicada.`
+        : `⚠️ Declaración de ${d.titular}: no se puede aplicar todavía:\n  • ${r.bloqueos.join("\n  • ")}`;
       if (messageId) await editTelegramMessage(chatId, messageId, texto, []).catch(() => sendTelegramMessage(chatId, texto).catch(() => undefined));
       else await sendTelegramMessage(chatId, texto).catch(() => undefined);
     } catch (error) {

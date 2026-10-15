@@ -50,7 +50,8 @@ export async function reenviarPropuestaGasto(propuestaInicial: PropuestaGasto, e
   // Se recalcula SIEMPRE al renovar: un movimiento puede haber llegado después de crear la propuesta
   // y una fila antigua puede guardar false aunque el algoritmo actual ya sepa buscar por conversión.
   let trazaBusqueda = crearTrazaBusqueda();
-  if (propuesta.candidatos.length === 0 && esFechaDocumentoValida(propuesta.fecha)) {
+  // Con cargos ya previstos (declaración firmada) no se vuelve a buscar un cargo suelto por el total: la conciliación es el lote.
+  if (propuesta.candidatos.length === 0 && esFechaDocumentoValida(propuesta.fecha) && !propuesta.conciliacionPlanificada) {
     let movimientoEncontrado = false;
     // Hallazgo real de auditoría: la primera versión solo distinguía "1 match exacto" de "0
     // matches" — cuando hay VARIOS matches exactos igual de parecidos (ninguno único), ninguna de

@@ -1754,7 +1754,9 @@ export async function buscarComprasPorMonto(
   monto: number,
   fecha: string,
   ventanaDias = 15,
-  moneda?: string
+  moneda?: string,
+  /** `sinColapsarPorContacto`: devuelve TODAS las compras del importe (por defecto se conserva solo la más reciente de cada contacto). */
+  opciones: { sinColapsarPorContacto?: boolean } = {}
 ): Promise<PurchaseCandidato[]> {
   const fechaBase = new Date(fecha);
   const desde = new Date(fechaBase);
@@ -1774,7 +1776,7 @@ export async function buscarComprasPorMonto(
     if (cursor) params.set("cursor", cursor);
 
     const data = (await holdedWriteCall(empresa, "GET", `/purchases?${params.toString()}`)) as {
-      items?: Array<{ id: string; contact_name?: string; date?: string; total?: string; description?: string; currency?: string }>;
+      items?: Array<{ id: string; contact_name?: string; date?: string; total?: string; description?: string; currency?: string; document_number?: string | null }>;
       cursor?: string;
       has_more?: boolean;
     };
@@ -1785,7 +1787,7 @@ export async function buscarComprasPorMonto(
       const total = parsearMontoHolded(item.total);
       if (!Number.isFinite(total) || !montosCercanos(total, monto, TOLERANCIA_MONTO)) continue;
 
-      const clave = normalizar(item.contact_name);
+      const clave = opciones.sinColapsarPorContacto ? item.id : normalizar(item.contact_name);
       const existente = porProveedor.get(clave);
       if (existente && existente.fecha >= (item.date ?? "")) continue;
 
@@ -1794,6 +1796,7 @@ export async function buscarComprasPorMonto(
         contactName: item.contact_name,
         fecha: item.date ?? "",
         total,
+        documentNumber: item.document_number || undefined,
         descripcion: item.description ?? "",
         moneda: (item.currency ?? moneda ?? "EUR").toUpperCase(),
       });

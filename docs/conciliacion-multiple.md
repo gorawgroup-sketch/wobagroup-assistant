@@ -12,6 +12,11 @@ La herramienta `conciliar_multiples_movimientos_bancarios` conserva la selecció
 
 La suma exacta es necesaria, pero no demuestra por sí sola que los pagos correspondan a la compra. La selección debe estar identificada por el usuario o por evidencia verificable y mostrarse para aprobación. No hay selección automática de subconjuntos por importe.
 
+## Otros orígenes del plan
+
+- **Declaración de gastos sin soporte firmada** (`core/soportes/declaracion/aplicarDeclaracion.ts`): un gasto por el total y todos los cargos de la declaración contra él. El plan nace con `origen: { tipo: "declaracion", id }`; al completarse, el callback marca la declaración «aplicada». Si el gasto aún no existe, la propuesta de gasto lleva `conciliacionPlanificada` (movimientos + motivo + origen) y, al crear la compra, `gastoCallbackHandler` prepara el plan con esos cargos en vez de buscar uno suelto.
+- La publicación del desglose y los botones es única para la herramienta, la declaración y ese puente: `core/holded/conciliacionMultiple/proponer.ts`.
+
 ## Invariantes
 
 - Todos los recursos se leen con las credenciales de la misma empresa. Se exige que el ID y la cuenta devueltos coincidan con los solicitados.

@@ -1,6 +1,13 @@
 import type { Empresa } from "../client";
 
 export interface ReferenciaMovimiento { accountId: string; movementId: string; fecha: string }
+/** Quién originó el plan (hoy: una declaración de gastos sin soporte firmada). Al completarse, ese origen se cierra. */
+export interface OrigenPlan { tipo: "declaracion"; id: string }
+/**
+ * Conciliación decidida ANTES de crear la compra (los cargos ya se conocen): viaja con la propuesta de gasto y, al crearse la
+ * compra, se prepara el plan múltiple con estos movimientos en vez de buscar un único cargo por importe y fecha.
+ */
+export interface ConciliacionPlanificada { movimientos: ReferenciaMovimiento[]; motivo: string; origen?: OrigenPlan }
 export interface MovimientoExacto extends ReferenciaMovimiento {
   descripcion: string;
   cuenta: string;
@@ -47,6 +54,7 @@ export interface PlanConciliacion {
   parcial?: boolean;
   /** Cierre del residuo de redondeo de una compra en divisa (pago «Ajustar cambio de divisa», ver write.ts). */
   ajusteCambio?: { estado: string; montoCentimos: number; motivo: string };
+  origen?: OrigenPlan;
 }
 export interface ResultadoCierreResiduo { estado: "sin_residuo" | "aplicado" | "ya_aplicado" | "requiere_revision" | "incierto"; montoCentimos: number; motivo: string }
 export interface PuertoHolded {
@@ -100,11 +108,15 @@ export function validarReferencia(ref: ReferenciaMovimiento): void {
     throw new Error("Fecha bancaria inválida (YYYY-MM-DD).");
   }
 }
+/** Monedas en las que la conciliación múltiple está habilitada (EUR por defecto; ver validarCompra). */
+export function monedasPermitidasConciliacionMultiple(): string[] {
+  return (process.env.WOBI_CONCILIACION_MULTIPLE_MONEDAS ?? "EUR").split(",").map((m) => m.trim().toUpperCase()).filter(Boolean);
+}
 export function validarCompra(c: CompraExacta): void {
   // Monedas permitidas por entorno (EUR por defecto): write.ts documenta una incidencia real de aplicación incorrecta de FX en Holded.
   // Una moneda distinta solo se enciende de forma explícita (WOBI_CONCILIACION_MULTIPLE_MONEDAS="EUR,USD") y SIN conversión: la
   // compra, la cuenta y todos los movimientos deben estar en esa misma moneda (se comprueba más abajo y en el adaptador).
-  const permitidas = (process.env.WOBI_CONCILIACION_MULTIPLE_MONEDAS ?? "EUR").split(",").map((m) => m.trim().toUpperCase()).filter(Boolean);
+  const permitidas = monedasPermitidasConciliacionMultiple();
   if (!permitidas.includes(c.moneda)) throw new Error(`La conciliación múltiple no está habilitada para ${c.moneda}; hoy solo: ${permitidas.join(", ")}. Otras monedas requieren validar antes la liquidación de Holded.`);
   if (!["pending", "partial", "completed"].includes(c.estado)) throw new Error("Compra cancelada o con estado desconocido.");
   if (!Array.isArray(c.cuentasContables) || c.cuentasContables.length !== 1 || !c.cuentasContables[0]) throw new Error("Cuenta contable no identificada o múltiple; requiere revisión.");
@@ -131,11 +143,12 @@ export function validarCompra(c: CompraExacta): void {
   if (!esDivisaExtranjera(c) && suma !== BigInt(c.pagadoCentimos)) throw new Error("El detalle de pagos no coincide con el total pagado.");
 }
 /** `recuperacion`: se reanuda un lote detenido; puede quedar un solo movimiento. */
-export function validarSeleccion(c: CompraExacta, movimientos: MovimientoExacto[], opciones: { recuperacion?: boolean; parcial?: boolean } = {}): void {
+export function validarSeleccion(c: CompraExacta, movimientos: MovimientoExacto[], opciones: { recuperacion?: boolean; parcial?: boolean; unico?: boolean } = {}): void {
   validarCompra(c);
   // Una compra que YA tiene pagos puede completarse con un solo cargo; una parcial, también (deja el resto abierto).
-  const minimo = opciones.recuperacion || opciones.parcial || c.pagos.length > 0 ? 1 : 2;
-  if (movimientos.length < minimo || movimientos.length > 20) throw new Error("Selecciona entre 2 y 20 movimientos identificados.");
+  // `unico`: el plan viene de un origen que ya identificó los cargos (declaración firmada con un solo cargo).
+  const minimo = opciones.recuperacion || opciones.parcial || opciones.unico || c.pagos.length > 0 ? 1 : 2;
+  if (movimientos.length < minimo || movimientos.length > 20) throw new Error(`Selecciona entre ${minimo} y 20 movimientos identificados.`);
   if (c.pendienteCentimos <= 0) throw new Error("La compra no tiene saldo pendiente.");
   const ids = new Set<string>();
   let suma = 0n;
