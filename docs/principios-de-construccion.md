@@ -134,6 +134,21 @@ Caso del día: pedí construir «un punto de administración para reprocesar cor
    documento en `docs/`, se enganchan por los 3 puntos de extensión de arriba y hablan con el resto por funciones
    exportadas, nunca leyendo el estado interno de otro módulo.
 
+## Un incidente, un solo PR: recorrer la cadena entera antes de tocar código (Carlos, 2026-10-14)
+
+Caso del día: la tasa turística de 8 € necesitó TRES PR encadenados (#484 propuesta, #487 descarte, #488 conciliación) porque
+el primero corrigió la lectura del documento solo en el primer eslabón. Carlos: «no es sostenible que el sistema se demore
+tanto… así no trabajamos de manera automatizada». Regla:
+
+1. Antes de escribir código, escribir la cadena completa que recorre el caso (leer → proponer → crear → conciliar → preguntar →
+   «Sí, conciliar» → reprocesar/descartar) y señalar en cada eslabón dónde vive el dato que falla.
+2. El PR cubre TODOS los eslabones de esa lista y lleva una prueba de extremo a extremo con el caso real (banco de casos);
+   si un eslabón queda fuera a propósito, se dice en el PR y en el tablero.
+3. Primero lo que resuelve al operador HOY con lo que ya existe (reprocesar, volver a proponer, elegir con aviso, puntos
+   `/admin/*`); el código se despliega una vez, no en vueltas de 15 minutos.
+4. Cómo se comprueba que esto se adoptó: el tablero muestra un PR por incidente; el banco de casos crece con cada incidente;
+   y una regresión en un eslabón ya cubierto hace fallar las pruebas antes de llegar a producción.
+
 ## Cuándo un archivo compartido es una señal de alerta
 
 Si un archivo empieza a acumular módulos o casos no relacionados entre sí — más de un par
