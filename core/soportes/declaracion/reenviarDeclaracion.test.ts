@@ -61,3 +61,11 @@ test("el correo registrado siempre va y los indicados por Carlos se añaden sin 
   assert.deepEqual(destinosReenvio("project@wobagroup.com", "Project@wobagroup.com; otro@x.com"), ["project@wobagroup.com", "otro@x.com"]);
   assert.deepEqual(destinosReenvio("project@wobagroup.com", undefined), ["project@wobagroup.com"]);
 });
+
+// Caso real 15-10: «aplica la declaración firmada de German» no encontraba la firmada porque el selector solo miraba generada/enviada.
+test("el selector admite buscar las firmadas (aplicar_declaracion_firmada) y lo dice en el error", () => {
+  const firmada = { id: "f1", empresa: "EWORKS", titular: "German Alejandro Robles", email: "g@x.com", cargoFirmante: "CEO", chatId: 1, cargos: [], driveFileId: "f", driveUrl: "u", nombreArchivo: "n.docx", estado: "firmada" as const, creadoEn: 1 };
+  assert.equal(seleccionarDeclaracionPendiente([firmada as never], { titular: "German" }, ["firmada"]).id, "f1");
+  assert.throws(() => seleccionarDeclaracionPendiente([firmada as never], { titular: "German" }), /pendiente de firma/);
+  assert.throws(() => seleccionarDeclaracionPendiente([], { titular: "German" }, ["firmada"]), /declaración firmada para German/);
+});

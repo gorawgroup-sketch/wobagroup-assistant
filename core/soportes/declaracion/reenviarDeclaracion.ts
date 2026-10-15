@@ -38,8 +38,10 @@ function normalizar(texto: string): string {
  * dentro del titular) o, si no se da nada y solo hay una pendiente, esa. Lanza con la lista cuando hay varias.
  * Caso real 12-10: Wobi llamó al reenvío con «German» y sin correo, y la herramienta falló en 0 ms pidiendo el correo.
  */
-export function seleccionarDeclaracionPendiente(pendientes: Declaracion[], criterio: { empresa?: string; email?: string; titular?: string }): Declaracion {
-  let candidatas = pendientes.filter((d) => d.estado === "generada" || d.estado === "enviada");
+/** `estados`: por defecto las pendientes de firma (reenvío); `["firmada"]` para aplicar el paso C (aplicar_declaracion_firmada). */
+export function seleccionarDeclaracionPendiente(pendientes: Declaracion[], criterio: { empresa?: string; email?: string; titular?: string }, estados: Declaracion["estado"][] = ["generada", "enviada"]): Declaracion {
+  let candidatas = pendientes.filter((d) => estados.includes(d.estado));
+  const queEstado = estados.length === 1 && estados[0] === "firmada" ? "firmada" : "pendiente de firma";
   if (criterio.empresa) candidatas = candidatas.filter((d) => d.empresa === criterio.empresa);
   const porNombre = (lista: Declaracion[]): Declaracion[] => {
     const palabras = normalizar(criterio.titular ?? "").split(/\s+/).filter(Boolean);
@@ -53,7 +55,7 @@ export function seleccionarDeclaracionPendiente(pendientes: Declaracion[], crite
   } else candidatas = porNombre(candidatas);
   candidatas.sort((a, b) => b.creadoEn - a.creadoEn);
   const quien = criterio.email?.trim() || criterio.titular?.trim() || (criterio.empresa ? `la empresa ${criterio.empresa}` : "ninguna persona concreta");
-  if (!candidatas.length) throw new Error(`No hay ninguna declaración pendiente de firma para ${quien}.`);
+  if (!candidatas.length) throw new Error(`No hay ninguna declaración ${queEstado} para ${quien}.`);
   const personas = new Set(candidatas.map((d) => `${d.titular} <${d.email}> (${d.empresa})`));
   if (personas.size > 1) throw new Error(`Hay varias declaraciones pendientes y «${quien}» no basta para distinguirlas: ${[...personas].join("; ")}. Indica el correo o el nombre completo.`);
   return candidatas[0];
