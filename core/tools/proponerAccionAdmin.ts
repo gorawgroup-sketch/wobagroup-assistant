@@ -22,6 +22,8 @@ export const HERRAMIENTAS_PERMITIDAS: ReadonlySet<string> = new Set([
   "proponer_correo_a_audiencia",
   // Solo prepara el correo que pide a un creador el dato que falta en su gasto, con botón de envío (superadmin).
   "solicitar_datos_faltantes_a_creadores",
+  // Prepara la conciliación de una compra ya registrada con su cargo: manda la pregunta «Conciliar con #1» (Sí/No); escribe solo el botón.
+  "conciliar_movimiento_bancario",
 ]);
 
 function secretoValido(recibido: string | undefined, esperado: string): boolean {
