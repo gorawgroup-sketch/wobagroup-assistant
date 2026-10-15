@@ -1390,6 +1390,8 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
                 { monto: montoParaHolded, moneda: monedaParaHolded, proveedor: datos.proveedor },
                 { hayCorreoOrigen: Boolean(propuesta.correoOrigen) }
               )
+            : entrada.conciliacionPlanificada
+            ? `\n\n🔗 Cargos previstos: ${entrada.conciliacionPlanificada.movimientos.length} (${entrada.conciliacionPlanificada.motivo}). No se busca un cargo suelto por el total: al crear el gasto te mando la conciliación múltiple con esos cargos para que la confirmes.`
             : `\n\n💳 No encontré ningún movimiento bancario sin conciliar que coincida con ${importeTexto}` +
               (!esProveedorNoIdentificado(datos.proveedor)
                 ? " — ni exacto ni aproximado por nombre y monto cercano"

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { decidirAccion, esCompraDeLaDeclaracion, pagadoPorLaCompra, planificarAplicacion, textoPlan, totalDeclarado, type CompraTotal } from "./aplicarDeclaracion";
+import { decidirAccion, elegirComprasDeLaDeclaracion, esCompraDeLaDeclaracion, pagadoPorLaCompra, planificarAplicacion, textoPlan, totalDeclarado, type CompraTotal } from "./aplicarDeclaracion";
 import type { CargoDeclarado, Declaracion } from "./declaracionStore";
 import type { CargoLocalizado, MovimientoBanco } from "./localizarCargos";
 
@@ -21,6 +21,10 @@ test("la compra del total se reconoce por el número DECL-id o por el nombre del
   assert.equal(esCompraDeLaDeclaracion(compra({ contactName: "Proveedor X", documentNumber: "DECL-7aeb11cd" }), d), true);
   assert.equal(esCompraDeLaDeclaracion(compra({ contactName: "Rosso Brera" }), d), false);
   assert.equal(totalDeclarado(cuatro), 167.65);
+  // Dos compras del titular con el mismo total: la del número DECL exacto gana; sin número, las dos (ambigüedad que bloquea).
+  const dos = [compra({ id: "a" }), compra({ id: "b", documentNumber: "DECL-7aeb11cd" })];
+  assert.deepEqual(elegirComprasDeLaDeclaracion(dos, d).map((c) => c.id), ["b"]);
+  assert.deepEqual(elegirComprasDeLaDeclaracion([compra({ id: "a" }), compra({ id: "c" })], d).map((c) => c.id), ["a", "c"]);
 });
 
 test("decidirAccion: todos localizados → conciliar la compra existente o crear y conciliar; un cargo sin banco bloquea; todo conciliado = resuelta", () => {

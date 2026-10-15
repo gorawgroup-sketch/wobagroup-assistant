@@ -16,6 +16,8 @@ export type SituacionCargoBanco = "localizado" | "ya_conciliado" | "no_encontrad
 export interface CargoLocalizado { cargo: CargoDeclarado; situacion: SituacionCargoBanco; movimiento?: MovimientoBanco; detalle?: string }
 
 export const DIAS_TOLERANCIA_FECHA = 3;
+/** Holded filtra el listado por fecha valor, no por fecha contable: se lee con margen extra y la tolerancia se aplica después. */
+const DIAS_MARGEN_LECTURA = DIAS_TOLERANCIA_FECHA + 2;
 const DIA_MS = 24 * 60 * 60 * 1000;
 
 const diasEntre = (a: string, b: string): number => Math.abs(Date.parse(a.slice(0, 10)) - Date.parse(b.slice(0, 10))) / DIA_MS;
@@ -71,7 +73,7 @@ export async function localizarMovimientosDeclarados(empresa: Empresa, cargos: C
   const porMoneda = new Map<string, MovimientoBanco[]>();
   for (const moneda of new Set(cargos.map((c) => c.moneda.toUpperCase()))) {
     const fechas = cargos.filter((c) => c.moneda.toUpperCase() === moneda).map((c) => c.fecha).sort();
-    porMoneda.set(moneda, await lector.movimientos(empresa, moneda, sumarDias(fechas[0], -DIAS_TOLERANCIA_FECHA), sumarDias(fechas[fechas.length - 1], DIAS_TOLERANCIA_FECHA)));
+    porMoneda.set(moneda, await lector.movimientos(empresa, moneda, sumarDias(fechas[0], -DIAS_MARGEN_LECTURA), sumarDias(fechas[fechas.length - 1], DIAS_MARGEN_LECTURA)));
   }
   return cargos.map((c) => emparejarCargo({ ...c, moneda: c.moneda.toUpperCase() }, porMoneda.get(c.moneda.toUpperCase()) ?? []));
 }

@@ -27,6 +27,6 @@ test("lee el banco una vez por moneda con la ventana que cubre todos los cargos"
   const r = await localizarMovimientosDeclarados("EWORKS" as never, [c("Airalo", 9, "2026-09-07"), c("Rist Pizz Tovo", 47.4, "2026-09-13")], {
     movimientos: async (_e, moneda, desde, hasta) => { lecturas.push(`${moneda} ${desde}..${hasta}`); return [m("b", "Airalo", -9, "2026-09-06"), m("d", "Rist Pizz Tovo", -47.4, "2026-09-12")]; },
   });
-  assert.deepEqual(lecturas, ["EUR 2026-09-04..2026-09-16"]);
+  assert.deepEqual(lecturas, ["EUR 2026-09-02..2026-09-18"], "ventana = tolerancia + 2 días (Holded filtra por fecha valor)");
   assert.deepEqual(r.map((x) => x.movimiento?.movementId), ["b", "d"]);
 });

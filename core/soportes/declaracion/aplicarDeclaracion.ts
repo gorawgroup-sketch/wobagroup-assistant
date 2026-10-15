@@ -44,11 +44,18 @@ export function esCompraDeLaDeclaracion(c: CompraTotal, d: Pick<Declaracion, "id
   return partes.length >= 2 && partes.filter((p) => contacto.includes(p)).length >= 2;
 }
 
+/** Entre las compras del total: si una lleva el número DECL-<id> exacto, es esa; si no, todas las del titular (varias = ambigüedad). */
+export function elegirComprasDeLaDeclaracion(compras: CompraTotal[], d: Pick<Declaracion, "id" | "titular">): CompraTotal[] {
+  const porNumero = compras.filter((c) => (c.documentNumber ?? "").trim().toUpperCase() === numeroDocumentoDeclaracion(d).toUpperCase());
+  if (porNumero.length === 1) return porNumero;
+  return compras.filter((c) => esCompraDeLaDeclaracion(c, d));
+}
+
 const lectorReal: LectorPlan = {
   compras: async (empresa, d, total, moneda) => {
     const hoy = new Date().toISOString().slice(0, 10);
-    const compras = await buscarComprasPorMonto(empresa, total, hoy, DIAS_BUSQUEDA_COMPRA, moneda);
-    return compras.filter((c) => esCompraDeLaDeclaracion(c, d)).map((c) => ({ id: c.id, contactName: c.contactName, total: c.total, fecha: c.fecha, documentNumber: c.documentNumber }));
+    const compras = await buscarComprasPorMonto(empresa, total, hoy, DIAS_BUSQUEDA_COMPRA, moneda, { sinColapsarPorContacto: true });
+    return elegirComprasDeLaDeclaracion(compras.map((c) => ({ id: c.id, contactName: c.contactName, total: c.total, fecha: c.fecha, documentNumber: c.documentNumber })), d);
   },
   cargos: (empresa, cargos) => localizarMovimientosDeclarados(empresa, cargos),
   pagos: async (empresa, compraId) => {
@@ -182,11 +189,12 @@ export async function aplicarDeclaracion(chatId: number, d: Declaracion): Promis
     throw error;
   }
   if (salida !== "propuesta_enviada" && salida !== "propuesta_pendiente_existente") {
-    // La propuesta no llegó a mostrarse con botones (duplicado o datos pendientes): no se marca nada y se explica.
-    await unlink(firmada.rutaLocal).catch(() => undefined);
+    // La propuesta no llegó a mostrarse con botones: no se marca nada y se explica. Con «pendiente de datos» el archivo
+    // lo conserva ese pendiente (sus botones de reintento lo reprocesan); con «duplicada» ya no hace falta.
+    if (salida === "propuesta_duplicada") await unlink(firmada.rutaLocal).catch(() => undefined);
     const motivo = salida === "propuesta_duplicada"
       ? "Holded ya tiene este gasto o uno igual (ver el aviso de arriba): pide «aplica la declaración firmada» otra vez para conciliarlo con la compra existente"
-      : "el gasto quedó pendiente de datos (ver el aviso de arriba); resuélvelo y pide «aplica la declaración firmada» otra vez";
+      : "el gasto quedó pendiente de datos (ver el aviso de arriba): al resolverlo se creará sin el lote; después pide «aplica la declaración firmada» para conciliar sus cargos";
     return { modo: "bloqueado", bloqueos: [motivo] };
   }
   await marcarAplicada(d, "", plan.cargos, "propuesto", `gasto único de ${plan.total.toFixed(2)} ${plan.moneda} propuesto con la conciliación de ${plan.cargos.length} cargo(s) planificada (${salida})`);
