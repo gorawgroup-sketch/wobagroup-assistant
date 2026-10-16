@@ -1,4 +1,4 @@
-import { proponerGastoSinSoporte, proponerParCompensado } from "../holded/conciliarSinSoporte";
+import { proponerGastoSinSoporte, proponerParCompensado, proponerRestoDeCargo } from "../holded/conciliarSinSoporte";
 import type { Empresa } from "../holded/client";
 import type { ToolDefinition } from "./types";
 
@@ -9,12 +9,15 @@ export const proponerConciliarSinSoporteTool: ToolDefinition = {
     "(1) modo='par': un cargo y su reembolso TOTAL (suman cero, misma cuenta y moneda; pasa dos movimientos) — se marcan ambos conciliados sin gasto. " +
     "(2) modo='gasto': un cargo real sin recibo — se CREA un gasto en Holded sin adjunto, clonando proveedor, cuenta contable y etiquetas de un gasto " +
     "ya registrado de la misma persona (plantilla_compra_id), y se concilia con el cargo. Nunca marques un cargo con gasto real como conciliado " +
-    "sin documento. Los ids salen de consultar_movimientos_sin_conciliar. No escribe nada: muestra el antes/ahora con botones y solo un " +
+    "sin documento. (3) modo='resto': el RESTO de un cargo ya conciliado en parte con su gasto (comisión de una transferencia: gasto 1.500 USD, cargo 1.503 USD) " +
+    "se registra como GASTO BANCARIO —proveedor del banco, borrador, sin adjunto, descripción del propio cargo— y se concilia con ese resto para dejar el cargo al 100 %; " +
+    "si hay un tratamiento aprendido de casos anteriores para esa persona y moneda se usa solo (pasa `proveedor`), si no indica plantilla_compra_id de un gasto bancario anterior. " +
+    "Los ids salen de consultar_movimientos_sin_conciliar. No escribe nada: muestra el antes/ahora con botones y solo un " +
     "superadministrador puede confirmar.",
   input_schema: {
     type: "object",
     properties: {
-      modo: { type: "string", enum: ["par", "gasto"] },
+      modo: { type: "string", enum: ["par", "gasto", "resto"] },
       empresa: { type: "string", enum: ["WOBA", "EWORKS", "Footprint"] },
       motivo: { type: "string", description: "Por qué se cierra sin soporte, con las palabras del usuario." },
       movimientos: {
@@ -26,7 +29,8 @@ export const proponerConciliarSinSoporteTool: ToolDefinition = {
           required: ["cuenta_id", "movimiento_id", "fecha"],
         },
       },
-      plantilla_compra_id: { type: "string", description: "Modo 'gasto': id de un gasto ya registrado de la misma persona y proveedor, para copiar proveedor, cuenta y etiquetas." },
+      plantilla_compra_id: { type: "string", description: "Modo 'gasto': id de un gasto ya registrado de la misma persona y proveedor, para copiar proveedor, cuenta y etiquetas. Modo 'resto': id de un gasto bancario anterior del banco (opcional si ya hay un tratamiento aprendido)." },
+      proveedor: { type: "string", description: "Modo 'resto': la persona o proveedor cuyo gasto pagó el cargo (para aprender y reutilizar el tratamiento), ej. «NICOLAS DAVID GOMEZ OSORIO»." },
       concepto: { type: "string", description: "Modo 'gasto': qué fue el gasto (ej. «Traslado Uber — Alejandro Florez — 23 sep 2026»)." },
       descripcion: { type: "string", description: "Cómo aparece el cargo en el banco (opcional)." },
     },
@@ -50,6 +54,11 @@ export const proponerConciliarSinSoporteTool: ToolDefinition = {
       if (movimientos.length !== 1 || !plantilla) return "Error: el modo 'gasto' necesita un solo movimiento y plantilla_compra_id.";
       return proponerGastoSinSoporte(chatId, { empresa, movimiento: movimientos[0], plantillaCompraId: plantilla, concepto: typeof input.concepto === "string" ? input.concepto : "", motivo, descripcion });
     }
-    return "Error: modo debe ser 'par' o 'gasto'.";
+    if (input.modo === "resto") {
+      const proveedor = typeof input.proveedor === "string" ? input.proveedor.trim() : "";
+      if (movimientos.length !== 1 || !proveedor) return "Error: el modo 'resto' necesita un solo movimiento y el proveedor/persona cuyo gasto pagó el cargo.";
+      return proponerRestoDeCargo(chatId, { empresa, movimiento: movimientos[0], proveedor, plantillaCompraId: typeof input.plantilla_compra_id === "string" ? input.plantilla_compra_id : undefined, motivo });
+    }
+    return "Error: modo debe ser 'par', 'gasto' o 'resto'.";
   },
 };
