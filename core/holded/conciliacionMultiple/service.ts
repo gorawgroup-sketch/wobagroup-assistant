@@ -86,7 +86,7 @@ export class ServicioConciliacionMultiple {
   private async comprobarAntesDeEscribir(p: PlanConciliacion): Promise<void> {
     const hechos = p.movimientos.filter((m) => p.verificados.includes(claveMovimiento(m)));
     const restantes = p.movimientos.filter((m) => !p.verificados.includes(claveMovimiento(m)));
-    if (restantes.length > 0) validarSeleccion(p.compra, restantes, { recuperacion: hechos.length > 0, parcial: p.parcial === true, unico: p.origen?.tipo === "lote" });
+    if (restantes.length > 0) validarSeleccion(p.compra, restantes, { recuperacion: hechos.length > 0, parcial: p.parcial === true, unico: Boolean(p.origen) });
     else validarCompra(p.compra);
     await this.holded.validarClasificacion(p.empresa, p.compra.id);
     comprobarCompra(p.compra, await this.holded.compra(p.empresa, p.compra.id));

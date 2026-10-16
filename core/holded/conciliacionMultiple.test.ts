@@ -451,6 +451,24 @@ test("parcial: un solo cargo basta; si los cargos cubren todo el saldo o lo supe
   const i = fixture();
   await assert.rejects(() => i.servicio.preparar({ ...i.datos, movimientos: i.movimientos.slice(0, 1) }));
 });
+for (const tipo of ["declaracion", "lote"] as const) {
+  test(`origen ${tipo}: un solo cargo exacto se prepara Y se aprueba (el mínimo de 1 vale igual al preparar que al aprobar)`, async () => {
+    const f = fixture();
+    f.compra.totalCentimos = 100000; f.compra.pendienteCentimos = 100000; // el cargo mov-0 de 1.000 € cubre justo el saldo
+    const unico = f.movimientos.slice(0, 1);
+    const plan = await f.servicio.preparar({ ...f.datos, movimientos: unico, origen: { tipo, id: "origen-1" } });
+    assert.deepEqual(await f.servicio.revalidar(plan.id, 123), { ok: true });
+    const r = await f.servicio.decidir(plan.id, 123, 9, true);
+    assert.equal(r.estado, "completado", r.detalle);
+    assert.equal(f.compra.pendienteCentimos, 0);
+    assert.deepEqual(f.posts, ["mov-0"]);
+  });
+}
+test("sin origen, un solo cargo exacto sobre una compra sin pagos sigue sin poder prepararse (no se relaja la regla general)", async () => {
+  const f = fixture();
+  f.compra.totalCentimos = 100000; f.compra.pendienteCentimos = 100000;
+  await assert.rejects(() => f.servicio.preparar({ ...f.datos, movimientos: f.movimientos.slice(0, 1) }), /entre 2 y 20/);
+});
 testDivisa("parcial en divisa (recibo de 581,92 USD cobrado en 451,30 + 130,62): concilia 451,30 sin cerrar residuo y deja 130,62 abiertos", async () => {
   const f = fixtureDivisa();
   // Este recibo: total 895 (8,95) y solo aparece el primer cargo de 6,91; el de 2,04 llega después.
