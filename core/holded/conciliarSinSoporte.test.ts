@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { esAccionSensible } from "../telegram/authorizedUsersSheet";
+import { FechaBloqueadaError } from "./write";
 import { ejecutarResto, evaluarRestoDeCargo, textoPropuestaGasto, textoPropuestaPar, textoPropuestaResto, type DatosResto, type DepsResto, type PropuestaSinSoporte } from "./conciliarSinSoporte";
 import { claveResto, elegirRestoAprendido, restoDesdeFila, type RestoCargoAprendido } from "./restoCargoAprendidoSheet";
 
@@ -165,3 +166,16 @@ test("aprendizaje: filas del almacén ilegibles se ignoran y las etiquetas rotas
   assert.equal(restoDesdeFila(2, ["k", "Footprint", "Nicolás", "usd", "p", "c", "REVOLUT", "626", '["banco"]', "3", "2026-10-16"])?.veces, 3);
 });
 
+test("ejecutar: si el periodo del cargo está cerrado en Holded, no crea ni concilia nada y lo dice", async () => {
+  const { deps, llamadas } = depsResto({ crearGasto: async () => { throw new FechaBloqueadaError("2026-09-11"); } } as never);
+  const msg = await ejecutarResto(propuesta, datosResto, deps);
+  assert.match(msg, /cerrado el periodo del 11\/09\/2026[\s\S]*No creé nada[\s\S]*a mano/);
+  assert.equal(llamadas.reconciliados.length, 0);
+  assert.equal(llamadas.aprendidos.length, 0);
+});
+
+test("ejecutar: otro error de Holded al crear el gasto se propaga y no concilia", async () => {
+  const { deps, llamadas } = depsResto({ crearGasto: async () => { throw new Error("Holded 500"); } } as never);
+  await assert.rejects(ejecutarResto(propuesta, datosResto, deps), /Holded 500/);
+  assert.equal(llamadas.reconciliados.length, 0);
+});
