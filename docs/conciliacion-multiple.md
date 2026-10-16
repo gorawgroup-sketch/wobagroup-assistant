@@ -41,6 +41,10 @@ El registro bloquea nuevas escrituras al aproximarse a 9.500 eventos; requiere a
 
 La nueva ruta no avanza la cola de correos por su cuenta: una selección por IDs no acredita qué mensaje de correo es dueño del plan. En particular, nunca anuncia “resuelto” ante un lote incompleto. Los botones antiguos asociados a una compra reservada remiten al plan sin consumir la pregunta ni avanzar la cola.
 
+## Aprendizaje del lote
+
+Cada par que el lote concilia y verifica se registra en el almacén de conciliaciones aprendidas (`registrarConciliacionVerificada`, origen `lote`), igual que el botón individual: la siguiente vez que aparezca el mismo proveedor y descripción, el buscador ya lo reconoce. Un fallo al aprender nunca altera el resultado del lote. El resto de un cargo mayor se cierra como gasto bancario por `proponer_cerrar_cargo_sin_soporte` (modo «resto») y también queda aprendido.
+
 ## Validación y despliegue
 
 Pruebas sin credenciales reales ni escrituras a servicios:

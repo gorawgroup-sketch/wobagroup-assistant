@@ -5816,6 +5816,7 @@ export async function leerEstadoMovimiento(
   amount?: string;
   accounting_amount?: string | number | null;
   currency?: string;
+  description?: string;
 } | undefined> {
   const fechaBase = new Date(fechaAproximada);
   const desde = new Date(fechaBase);
@@ -5847,6 +5848,7 @@ export async function leerEstadoMovimiento(
         amount?: string;
         accounting_amount?: string | number | null;
         currency?: string;
+        description?: string;
       }>;
       cursor?: string;
       has_more?: boolean;

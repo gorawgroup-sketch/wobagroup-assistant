@@ -12,6 +12,8 @@ import type { StoreLotes } from "./store";
 /** El motor de planes que usa el lote: el servicio de conciliación múltiple (o un doble en las pruebas). */
 export type MotorPlanes = Pick<ServicioConciliacionMultiple, "preparar" | "consultar" | "revalidar" | "decidir">;
 export type LectorHolded = Pick<PuertoHolded, "compra" | "movimiento">;
+/** Lo que el sistema aprende de un par que Holded confirmó (ver conciliacionAprendidaSheet.ts): nunca de una propuesta ni de un par no verificado. */
+export type Aprender = (par: ParIncluido, empresa: Empresa) => Promise<void>;
 
 /** Mutex propio del lote: distinto del de la conciliación, que cada plan toma por dentro (los mutex no son reentrantes). */
 export const mutexLote = (empresa: Empresa): string => `holded:lote-conciliaciones:${empresa}`;
@@ -22,6 +24,7 @@ export class ServicioLoteConciliaciones {
     private readonly lector: LectorHolded,
     private readonly store: StoreLotes,
     private readonly ahora = Date.now,
+    private readonly aprender?: Aprender,
   ) {}
 
   /**
@@ -156,6 +159,8 @@ export class ServicioLoteConciliaciones {
             const estado = plan.estado === "incierto" || plan.estado === "ejecutando" ? "incierto" : resultados.length === 1 ? "rechazado" : "parcial";
             return await this.detener(l, resultados, i, estado, `El lote se detuvo en el par ${i + 1} (${par.proveedor}): ${plan.estado}.`);
           }
+          // La conciliación ya está verificada por el motor: el sistema aprende ESE par (proveedor ↔ descripción del cargo), sin frenar el siguiente POST.
+          this.aprenderSinBloquear(par, l.empresa);
           await this.store.guardar(l);
         }
       } catch (error) {
@@ -172,6 +177,13 @@ export class ServicioLoteConciliaciones {
   }
 
   /** Detiene el lote en el par `i`: los siguientes se cancelan sin escribir y quedan anotados como no ejecutados. */
+  /** Aprender nunca retrasa ni rompe el lote: se lanza aparte, con tope de tiempo, y cualquier fallo solo se registra. */
+  private aprenderSinBloquear(par: ParIncluido, empresa: Empresa): void {
+    if (!this.aprender) return;
+    const tope = new Promise<never>((_, rechazar) => { setTimeout(() => rechazar(new Error("tiempo agotado")), 15_000).unref?.(); });
+    void Promise.race([this.aprender(par, empresa), tope]).catch((error) => console.error(`[loteConciliaciones] No se pudo guardar el aprendizaje del par ${par.compraId} (no crítico):`, error instanceof Error ? error.message : error));
+  }
+
   private async detener(l: LoteConciliaciones, resultados: ResultadoPar[], i: number, estado: LoteConciliaciones["estado"], detalle: string): Promise<LoteConciliaciones> {
     const pendientes = l.incluidos.slice(i + 1);
     const fallos = await this.cancelarPlanes(l, i + 1);

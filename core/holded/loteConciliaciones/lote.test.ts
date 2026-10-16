@@ -55,12 +55,17 @@ function fixture() {
   };
   let ahora = 1_000;
   const motor = new ServicioConciliacionMultiple(holded, storePlanes, () => ahora);
-  const servicio = new ServicioLoteConciliaciones(motor, holded, storeLotes, () => ahora);
+  const aprendidos: string[] = [];
+  const aprender = { falla: false };
+  const servicio = new ServicioLoteConciliaciones(motor, holded, storeLotes, () => ahora, async (par, empresa) => {
+    if (aprender.falla) throw new Error("Sheets no disponible");
+    aprendidos.push(`${empresa}|${par.proveedor}|${par.movimiento}|${par.descripcion}`);
+  });
   const pares = [
     { compraId: "c1", accountId: "main", movementId: "m1", fecha: "2026-10-15" },
     { compraId: "c2", accountId: "main", movementId: "m2", fecha: "2026-10-09" },
   ];
-  return { registro, servicio, motor, holded, compras, movimientos, posts, falloEn, eventosPlanes, eventosLotes, pares, motivo: "Importe exacto, mismo proveedor y patrón mensual.",
+  return { aprendidos, aprender, registro, servicio, motor, holded, compras, movimientos, posts, falloEn, eventosPlanes, eventosLotes, pares, motivo: "Importe exacto, mismo proveedor y patrón mensual.",
     expirar() { ahora += TTL_PLAN + 1; } };
 }
 const preparar = (f: ReturnType<typeof fixture>, pares = f.pares) => f.servicio.preparar({ empresa: "Footprint", chatId: 7, pares, motivo: f.motivo });
@@ -281,5 +286,24 @@ test("el motor no revalida un plan caducado", async () => {
   f.expirar();
   const r = await f.motor.revalidar(lote.incluidos[0].planId, 7);
   assert.deepEqual(r, { ok: false, motivo: "la propuesta expiró" });
+});
+
+test("el sistema aprende cada par que Holded confirmó, y solo esos", async () => {
+  const f = fixture();
+  f.compras.set("c3", compra("c3", "Symbiosis", 750000));
+  const lote = await preparar(f, [...f.pares, { compraId: "c3", accountId: "main", movementId: "m3", fecha: "2026-10-07" }]);
+  f.falloEn.add("m2");
+  await f.servicio.decidir(lote.id, 7, 99, true);
+  assert.deepEqual(f.aprendidos, ["Footprint|Cratevo|main/m1|Cargo m1"], "solo el par verificado; el incierto y el no enviado no se aprenden");
+});
+
+test("un fallo al guardar el aprendizaje no rompe el lote ya conciliado", async () => {
+  const f = fixture();
+  f.aprender.falla = true;
+  const lote = await preparar(f);
+  const r = await f.servicio.decidir(lote.id, 7, 99, true);
+  assert.equal(r.estado, "completado");
+  assert.deepEqual(f.posts, ["m1", "m2"]);
+  assert.equal(f.aprendidos.length, 0);
 });
 
