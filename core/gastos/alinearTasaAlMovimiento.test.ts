@@ -184,9 +184,11 @@ test("cargo mayor en USD con diferencia de redondeo (0,04 %): no se edita el gas
   assert.equal(e.edicion.length, 0, "ningún PUT: cada PUT duplica el adjunto del gasto");
 });
 
-test("cargo mayor con la tasa del banco muy distinta (0,49 %): no concilia nada y dice por qué, sin editar", async () => {
+test("cargo mayor con la tasa del banco muy distinta (0,49 %): concilia sin editar el gasto y dice que la diferencia queda en el resto", async () => {
   const e = escenarioCargoMayor({ total: "3500,00", tasa: "1.16", cargo: "3528.83", contable: "3056.92" });
-  await assert.rejects(() => alinearTasaCambioAlMovimientoElegido("Footprint", "g", e.elegido, e.deps), /más que el margen de redondeo[\s\S]*No se concilió nada/);
+  const r = await alinearTasaCambioAlMovimientoElegido("Footprint", "g", e.elegido, e.deps);
+  assert.equal(r.estado, "no_aplica");
+  assert.match((r as { motivo: string }).motivo, /no se edita el gasto[\s\S]*resto del cargo[\s\S]*gasto bancario/);
   assert.equal(e.edicion.length, 0);
 });
 

@@ -28,8 +28,8 @@ const centimos = (importe: number) => Math.round(importe * 100);
  * Cargo MAYOR que el gasto en la misma moneda extranjera (gasto de 1.750 USD pagado con una transferencia de 1.778,98 USD que incluye 28,98 de
  * comisión). El gasto conserva su importe, así que NO se edita su tasa (editar la compra duplica su adjunto en Holded): se concilia su parte y el
  * resto del cargo queda abierto. Holded paga en EUR; la parte del gasto valdrá, a la tasa del banco, `contable × gasto ÷ cargo` EUR, y esa cifra solo
- * puede diferir del valor del gasto a su propia tasa por el redondeo que ya cierra el ajuste de cambio. Si la diferencia pasa del margen de
- * redondeo, no se concilia nada: igualarla exigiría editar la tasa del gasto, decisión de una persona sobre ese gasto.
+ * puede diferir del valor del gasto a su propia tasa. Si esa diferencia pasa del margen de redondeo NO se edita el gasto ni se bloquea (decisión de Carlos,
+ * 16-10-2026): se concilia tal cual y la diferencia de cambio queda en el resto del cargo, que se cierra como gasto bancario.
  */
 function evaluarCargoMayorMismaMoneda(
   compra: { currency_change?: unknown; payments_total?: unknown; payments_detail?: unknown },
@@ -50,11 +50,13 @@ function evaluarCargoMayorMismaMoneda(
   const diferencia = Math.abs(parteEur - valorGastoEur) * tasa; // en la moneda del gasto
   const margen = margenResiduoConversion(total);
   if (diferencia > margen) {
-    throw new Error(
-      `La parte del gasto a la tasa del banco (${parteEur.toFixed(2)} EUR) difiere de su valor al cambio del gasto (${valorGastoEur.toFixed(2)} EUR) en ` +
-      `${diferencia.toFixed(2)} ${moneda}, más que el margen de redondeo (${margen.toFixed(2)} ${moneda}). Igualarla exigiría editar la tasa del gasto ` +
-      `(Holded duplica su adjunto al editar) y eso no se hace dentro de una conciliación de cargo mayor. No se concilió nada.`
-    );
+    // Decisión de Carlos (16-10-2026): no se bloquea ni se le pide editar tasas. Se concilia el gasto tal cual y la diferencia de cambio
+    // (tasa del gasto distinta de la del banco) queda en el resto del cargo, que se cierra como gasto bancario.
+    return {
+      estado: "no_aplica",
+      motivo: `cargo mayor: la parte del gasto a la tasa del banco (${parteEur.toFixed(2)} EUR) difiere ${diferencia.toFixed(2)} ${moneda} de su valor al cambio del gasto (${valorGastoEur.toFixed(2)} EUR); ` +
+        "no se edita el gasto: esa diferencia de cambio queda en el resto del cargo, junto a la comisión, para cerrarlo como gasto bancario",
+    };
   }
   return {
     estado: "no_aplica",
