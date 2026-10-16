@@ -3,6 +3,7 @@ import type { Empresa } from "../holded/client";
 import {
   editarCompraHolded,
   leerEstadoMovimiento,
+  margenResiduoConversion,
   movimientoLibreParaConciliar,
   obtenerCompraHoldedPorId,
   validarCompraContraMovimiento,
@@ -22,6 +23,45 @@ function numero(valor: unknown): number {
 }
 
 const centimos = (importe: number) => Math.round(importe * 100);
+
+/**
+ * Cargo MAYOR que el gasto en la misma moneda extranjera (gasto de 1.750 USD pagado con una transferencia de 1.778,98 USD que incluye 28,98 de
+ * comisión). El gasto conserva su importe, así que NO se edita su tasa (editar la compra duplica su adjunto en Holded): se concilia su parte y el
+ * resto del cargo queda abierto. Holded paga en EUR; la parte del gasto valdrá, a la tasa del banco, `contable × gasto ÷ cargo` EUR, y esa cifra solo
+ * puede diferir del valor del gasto a su propia tasa por el redondeo que ya cierra el ajuste de cambio. Si la diferencia pasa del margen de
+ * redondeo, no se concilia nada: igualarla exigiría editar la tasa del gasto, decisión de una persona sobre ese gasto.
+ */
+function evaluarCargoMayorMismaMoneda(
+  compra: { currency_change?: unknown; payments_total?: unknown; payments_detail?: unknown },
+  importeMovimiento: number,
+  contable: number,
+  total: number,
+  moneda: string
+): ResultadoAlineacionTasa {
+  const cargo = Math.abs(importeMovimiento);
+  const tasa = numero(compra.currency_change);
+  if (!Number.isFinite(cargo) || !Number.isFinite(total) || !Number.isFinite(tasa) || tasa <= 0 || total <= 0 || importeMovimiento >= 0) {
+    throw new Error("Importes no válidos para conciliar un cargo mayor.");
+  }
+  if (cargo - total <= 0.005) throw new Error("El cargo elegido no es mayor que el gasto; no se concilia como cargo mayor.");
+  if (compraTienePagos(compra as never)) throw new Error("El gasto ya tiene pagos; no se concilia otro cargo mayor automáticamente.");
+  const parteEur = (Math.abs(contable) * total) / cargo;
+  const valorGastoEur = total / tasa;
+  const diferencia = Math.abs(parteEur - valorGastoEur) * tasa; // en la moneda del gasto
+  const margen = margenResiduoConversion(total);
+  if (diferencia > margen) {
+    throw new Error(
+      `La parte del gasto a la tasa del banco (${parteEur.toFixed(2)} EUR) difiere de su valor al cambio del gasto (${valorGastoEur.toFixed(2)} EUR) en ` +
+      `${diferencia.toFixed(2)} ${moneda}, más que el margen de redondeo (${margen.toFixed(2)} ${moneda}). Igualarla exigiría editar la tasa del gasto ` +
+      `(Holded duplica su adjunto al editar) y eso no se hace dentro de una conciliación de cargo mayor. No se concilió nada.`
+    );
+  }
+  return {
+    estado: "no_aplica",
+    motivo: `cargo mayor: la parte del gasto (${parteEur.toFixed(2)} EUR a la tasa del banco) difiere ${diferencia.toFixed(2)} ${moneda} de su valor al cambio del gasto; ` +
+      "es redondeo y lo cierra el ajuste de cambio, sin editar el gasto",
+  };
+}
 
 export type ResultadoAlineacionTasa =
   | { estado: "no_aplica"; motivo: string }
@@ -79,6 +119,7 @@ export async function alinearTasaCambioAlMovimientoElegido(
     if (!Number.isFinite(contable) || contable === 0) {
       return { estado: "no_aplica", motivo: `Holded no informa el equivalente contable en EUR del cargo en ${monedaMovimiento}` };
     }
+    if (elegido.origenCoincidencia === "cargo_mayor") return evaluarCargoMayorMismaMoneda(compra, importeMovimiento, contable, total, monedaDocumento);
     if (Math.abs(Math.abs(importeMovimiento) - Math.abs(elegido.monto)) > 0.005 || Math.abs(Math.abs(importeMovimiento) - total) > 0.005) {
       throw new Error("El cargo en la moneda del gasto no coincide con su importe; no se ajustó la tasa de cambio del gasto.");
     }

@@ -164,3 +164,44 @@ test("misma moneda extranjera sin equivalente contable: no se toca nada", async 
   assert.equal(r.estado, "no_aplica");
   assert.equal(e.llamadas.length, 0);
 });
+
+/** Cargo MAYOR en la misma moneda extranjera (colaborador de Footprint, 2026-10-16): nunca se edita el gasto. */
+function escenarioCargoMayor(o: { total: string; tasa: string; cargo: string; contable: string }) {
+  const edicion: unknown[][] = [];
+  const compra = { total: o.total, currency: "USD", currency_change: o.tasa, payments_total: "0,00", payments_detail: [] as unknown[] };
+  const movimiento = { status: "pending", reconciled_amount: "0.00", currency: "USD", amount: `-${o.cargo}`, accounting_amount: `-${o.contable}` };
+  const elegido = { accountId: "a", movementId: "m", fecha: "2026-09-11", descripcion: "To Colaborador Monthly Fee", monto: -Number(o.cargo), moneda: "USD", origenCoincidencia: "cargo_mayor" as const };
+  const deps = { leerCompra: async () => compra, leerMovimiento: async () => movimiento, validar: async () => ({ monedaCompra: "USD", monedaMovimiento: "USD" }),
+    editar: async (...a: unknown[]) => { edicion.push(a); return compra; } };
+  return { elegido, edicion, deps: deps as any };
+}
+
+test("cargo mayor en USD con diferencia de redondeo (0,04 %): no se edita el gasto y lo explica", async () => {
+  const e = escenarioCargoMayor({ total: "1500,00", tasa: "1.16", cargo: "1503.00", contable: "1295.12" });
+  const r = await alinearTasaCambioAlMovimientoElegido("Footprint", "g", e.elegido, e.deps);
+  assert.equal(r.estado, "no_aplica");
+  assert.match((r as { motivo: string }).motivo, /cargo mayor[\s\S]*sin editar el gasto/);
+  assert.equal(e.edicion.length, 0, "ningún PUT: cada PUT duplica el adjunto del gasto");
+});
+
+test("cargo mayor con la tasa del banco muy distinta (0,49 %): no concilia nada y dice por qué, sin editar", async () => {
+  const e = escenarioCargoMayor({ total: "3500,00", tasa: "1.16", cargo: "3528.83", contable: "3056.92" });
+  await assert.rejects(() => alinearTasaCambioAlMovimientoElegido("Footprint", "g", e.elegido, e.deps), /más que el margen de redondeo[\s\S]*No se concilió nada/);
+  assert.equal(e.edicion.length, 0);
+});
+
+test("cargo mayor: un cargo que no es mayor, un gasto con pagos o importes ilegibles se rechazan", async () => {
+  const igual = escenarioCargoMayor({ total: "1500,00", tasa: "1.16", cargo: "1500.00", contable: "1293.10" });
+  await assert.rejects(() => alinearTasaCambioAlMovimientoElegido("Footprint", "g", igual.elegido, igual.deps), /no es mayor/);
+  const conPagos = escenarioCargoMayor({ total: "1500,00", tasa: "1.16", cargo: "1503.00", contable: "1295.12" });
+  const deps = { ...conPagos.deps, leerCompra: async () => ({ total: "1500,00", currency: "USD", currency_change: "1.16", payments_total: "10,00", payments_detail: [{ id: "p", amount: "10,00" }] }) };
+  await assert.rejects(() => alinearTasaCambioAlMovimientoElegido("Footprint", "g", conPagos.elegido, deps as any), /ya tiene pagos/);
+  const sinTasa = escenarioCargoMayor({ total: "1500,00", tasa: "", cargo: "1503.00", contable: "1295.12" });
+  await assert.rejects(() => alinearTasaCambioAlMovimientoElegido("Footprint", "g", sinTasa.elegido, sinTasa.deps), /no válidos/);
+});
+
+test("sin cargo_mayor un importe distinto en la misma moneda sigue siendo un error (comportamiento anterior)", async () => {
+  const e = escenarioCargoMayor({ total: "1500,00", tasa: "1.16", cargo: "1503.00", contable: "1295.12" });
+  await assert.rejects(() => alinearTasaCambioAlMovimientoElegido("Footprint", "g", { ...e.elegido, origenCoincidencia: "aproximada" as const }, e.deps), /no coincide con su importe/);
+});
+

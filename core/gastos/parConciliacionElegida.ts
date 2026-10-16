@@ -32,10 +32,20 @@ export const numeroHolded = (valor: unknown): number => {
   return Number(texto.includes(",") ? texto.replace(/\./g, "").replace(",", ".") : texto);
 };
 
+export interface OpcionesParElegido {
+  /**
+   * El operador declara que el cargo incluye algo más que el gasto (una comisión de transferencia): se concilia solo la parte del gasto, el gasto
+   * conserva su importe y el resto del cargo queda abierto (cargoMayor.ts). Solo con gasto y cargo en la MISMA moneda; sin esta declaración un
+   * importe distinto sigue siendo una coincidencia «aproximada», que ajusta el gasto al cargo.
+   */
+  cargoMayor?: boolean;
+}
+
 export function evaluarParElegido(
   compra: Pick<CompraHoldedCruda, "total" | "currency" | "payments_total" | "payments_detail">,
   movimiento: MovimientoBancarioLeido,
-  cuentaId: string
+  cuentaId: string,
+  opciones: OpcionesParElegido = {}
 ): ResultadoParElegido {
   const rechazo = (motivo: string): ResultadoParElegido => ({ estado: "rechazado", motivo });
   if (compraTienePagos(compra as CompraHoldedCruda)) {
@@ -63,6 +73,11 @@ export function evaluarParElegido(
     origenCoincidencia: "aproximada" as const,
   };
 
+  if (opciones.cargoMayor) {
+    if (monedaDoc !== monedaMov) return rechazo(`el cargo mayor solo se admite con gasto y cargo en la misma moneda (gasto en ${monedaDoc}, cargo en ${monedaMov}).`);
+    if (Math.abs(nativo) - total <= 0.005) return rechazo("el cargo no es mayor que el gasto: concilia el par normal, sin declarar cargo mayor.");
+    return { estado: "ok", candidato: { ...base, monto: nativo, moneda: monedaDoc, origenCoincidencia: "cargo_mayor", restoDisponible: Math.abs(nativo) } };
+  }
   if (monedaDoc === monedaMov) {
     return { estado: "ok", candidato: { ...base, monto: nativo, moneda: monedaDoc } };
   }
