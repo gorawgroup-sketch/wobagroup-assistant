@@ -313,11 +313,13 @@ export async function listBankMovements(
   empresa: Empresa,
   accountId: string,
   desde?: string,
-  hasta?: string
+  hasta?: string,
+  /** Estados a leer, separados por comas («pending,partial»). Sin él, Holded devuelve en la práctica solo los pendientes. */
+  estados?: string
 ): Promise<BankMovement[]> {
   // Todas las páginas del rango (ver paginarMovimientos.ts): una sola página dejaba fuera los movimientos más antiguos.
   return paginarMovimientosBancarios<BankMovement>(
-    (parametros) => holdedGet(empresa, `/treasury/accounts/${accountId}/bank-movements`, parametros),
+    (parametros) => holdedGet(empresa, `/treasury/accounts/${accountId}/bank-movements`, estados ? { ...parametros, status: estados } : parametros),
     { start_date: desde, end_date: hasta }
   );
 }

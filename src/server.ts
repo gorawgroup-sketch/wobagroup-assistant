@@ -88,6 +88,7 @@ import { startScheduler, obtenerCantidadJobsEnCurso } from "../core/jobs/schedul
 import { ejecutarCierreInciertas } from "../core/jobs/cerrarInciertasAntiguas";
 import { ejecutarAuditoriaCargosExactos } from "../core/jobs/auditoriaCargosExactos";
 import { ejecutarAvisoDuplicadosBancarios } from "../core/jobs/duplicadosBancarios";
+import { ejecutarPropuestaPagosColaboradores } from "../core/jobs/pagosColaboradores";
 import { crearRouterProponerAccion } from "../core/tools/proponerAccionAdmin";
 import { handleEnvioMasivoCallback } from "../core/comunicaciones/envioMasivoTelegram";
 import { programarRevisionEnSecoTrasDespliegue } from "../core/gmail/automatico/revisionEnSeco";
@@ -743,6 +744,30 @@ app.post("/admin/duplicados-bancarios", express.json(), async (req, res) => {
   } catch (error) {
     console.error("[admin/duplicados-bancarios] Error:", error instanceof Error ? error.name : "Error");
     res.status(500).json({ error: "No se pudo completar la revisión." });
+  }
+});
+
+// Propuesta de pagos a colaboradores a demanda (mismo trabajo que el cron de las 10:30). Por defecto SIMULA (no manda nada ni marca nada); propone con
+// sus botones solo con { "simular": false }. Nunca concilia: lo hace el botón del superadministrador. Protegida por ADMIN_SECRET en `x-admin-secret`.
+app.post("/admin/pagos-colaboradores", express.json(), async (req, res) => {
+  res.set("Cache-Control", "no-store");
+  const esperado = process.env.ADMIN_SECRET;
+  if (!esperado) { res.status(503).json({ error: "ADMIN_SECRET no configurado en el servidor." }); return; }
+  const recibido = Buffer.from(String(req.get("x-admin-secret") ?? "")), correcto = Buffer.from(esperado);
+  if (recibido.length !== correcto.length || !timingSafeEqual(recibido, correcto)) { res.status(403).json({ error: "Secreto de administración inválido o ausente." }); return; }
+  try {
+    const r = await ejecutarPropuestaPagosColaboradores({ simular: (req.body as { simular?: unknown } | undefined)?.simular !== false });
+    res.json({
+      simulado: r.simulado,
+      pares: r.pares.map((p) => ({ empresa: p.empresa, proveedor: p.compra.contacto, gasto: p.compra.numero, total: p.compra.total, cargo: Math.abs(p.cargo.importe), moneda: p.compra.moneda, fecha: p.cargo.fecha, comision: p.comision })),
+      dudosos: r.dudosos.map((d) => ({ empresa: d.empresa, motivo: d.motivo, gastos: d.compras.map((c) => c.numero), cargos: d.cargos.map((m) => Math.abs(m.importe)) })),
+      restosPropuestos: r.restosPropuestos.map((x) => ({ empresa: x.empresa, cargo: x.cargo.descripcion, resto: x.resto })),
+      restosAntiguos: r.restosAManoOCerrados.map((x) => ({ empresa: x.empresa, cargo: x.cargo.descripcion, resto: x.resto })),
+      enviados: r.enviados.length, fallos: r.fallos.length, empresasConError: r.empresasConError,
+    });
+  } catch (error) {
+    console.error("[admin/pagos-colaboradores] Error:", error instanceof Error ? error.name : "Error");
+    res.status(500).json({ error: "No se pudo completar la propuesta." });
   }
 });
 

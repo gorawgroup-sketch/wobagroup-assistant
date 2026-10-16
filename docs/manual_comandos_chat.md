@@ -585,6 +585,15 @@ En modo activo el aviso dice qué va a pasar y que no hace falta hacer nada («s
 
 Cuando hay varias parejas «este gasto ↔ este cargo» demostradas, pídelo en el chat («concilia estas parejas de Footprint: …»). Wobi relee cada par en Holded, te muestra el desglose y deja fuera, con su motivo, lo que no cubre (gastos o cargos en otra moneda, cargos mayores que el gasto, gastos con pagos, cargos ya conciliados). Pulsas **«✅ Conciliar los N pares»**: Wobi revalida todos antes de escribir el primero, los concilia de uno en uno verificando cada pago y se detiene en el primero que no pueda verificar. El resultado dice qué quedó conciliado, qué no se envió y, si algo queda «incierto», qué revisar. Pregunta por un lote con «¿cómo va el lote …?». Detalle en `docs/conciliacion-multiple.md`.
 
+## Pagos a colaboradores en divisa: propuesta diaria (16-10-2026)
+
+Cada mes entra un gasto «Monthly fee» sin pagar por colaborador y, días después, una transferencia «To <nombre> …» de la cuenta en USD (o COP) que incluye una comisión de unos 28 USD. Wobi lo revisa solo **cada día laborable a las 10:30** (tras la sincronización bancaria) y **solo propone**; no concilia nada hasta que pulses el botón.
+
+- **Qué empareja:** un gasto sin pagar y una transferencia («To …») de la misma moneda extranjera cuya descripción lleva al menos dos palabras del nombre del proveedor, con importe igual o superior por una comisión razonable (hasta 40 USD; en COP y otras monedas solo importe exacto) y fechas cercanas. Si un proveedor tiene varios gastos y varias transferencias, los empareja por orden de fecha solo si hay tantos gastos como cargos y cada par encaja; si no, lo deja como **dudoso** y lo dice.
+- **Qué te manda:** un aviso con la lista de pares y, a continuación, cada par con la pregunta de siempre «Conciliar con #1» (el gasto se concilia sin editarlo ni tocar su tasa; la comisión y la diferencia de cambio quedan como resto del cargo). Sin novedades no escribe a nadie; lo ya propuesto no se repite hasta pasados 7 días.
+- **Restos:** las transferencias ya conciliadas en parte con un resto de comisión (≤ 10 %) del trimestre actual llegan con el botón «Registrar gasto bancario y conciliar». Los de trimestres anteriores solo se listan: Holded suele tener esos periodos cerrados y no deja crear el gasto bancario, así que se ajustan a mano.
+- **A demanda:** `POST /admin/pagos-colaboradores` (`x-admin-secret`); simula por defecto, `{"simular": false}` para proponer. Código: `core/holded/pagosColaboradores.ts` (reglas), `core/jobs/pagosColaboradores.ts` (lectura de Holded y envío), almacén `_pagos_colaboradores_propuestos`.
+
 ## Operación desde el servidor (puntos `/admin/*`)
 
 Para que quien opera el sistema resuelva un caso sin pedirle a Carlos que escriba comandos y sin ejecutar flujos de archivos
@@ -598,6 +607,7 @@ secreto de administración (`ADMIN_SECRET`, cabecera `x-admin-secret` salvo dond
 - `POST /admin/cerrar-inciertas` — cierre de operaciones inciertas antiguas; simula por defecto (`{"simular": false}` para cerrar). (PR #477.)
 - `POST /admin/auditoria-cargos-exactos` — auditoría de cargos exactos no ofrecidos; simula por defecto. (PR #479.)
 - `POST /admin/duplicados-bancarios` — aviso de lotes de copias bancarias (mismo trabajo que el cron laborable de las 10:05); simula por defecto. Ver `docs/duplicados-bancarios.md`.
+- `POST /admin/pagos-colaboradores` — propuesta de pagos a colaboradores en divisa (mismo trabajo que el cron laborable de las 10:30); simula por defecto. Ver la sección «Pagos a colaboradores en divisa».
 - `POST /admin/restaurar-comprobante` — reposición de comprobantes del manifiesto en compras sin adjuntos. (PR #476.)
 - `POST /admin/run-gmail-check?secret=…` — lanza la revisión de correo como `/revisarcorreo`.
 - `POST /admin/run-holded-check`, `/admin/run-holded-check-preliminar`, `/admin/run-fiscal-check`, `/admin/run-costos-check`,

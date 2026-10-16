@@ -11,6 +11,7 @@ import { revisarAdjuntosDuplicados } from "./revisarAdjuntosDuplicados";
 import { ejecutarCierreInciertas } from "./cerrarInciertasAntiguas";
 import { ejecutarAuditoriaCargosExactos } from "./auditoriaCargosExactos";
 import { ejecutarAvisoDuplicadosBancarios } from "./duplicadosBancarios";
+import { ejecutarPropuestaPagosColaboradores } from "./pagosColaboradores";
 import { ejecutarSeguimientoComunicaciones } from "./seguimientoComunicaciones";
 import { ejecutarSolicitudDatosFaltantes } from "./solicitarDatosFaltantes";
 import { revisarAplazamientoImpuestos } from "./revisarAplazamientoImpuestos";
@@ -301,6 +302,16 @@ export function startScheduler(): void {
     { timezone: TIMEZONE }
   );
   console.log(`[scheduler] duplicadosBancarios programado: laborables 10:05 (${TIMEZONE})`);
+
+  // Pagos a colaboradores en divisa: empareja gasto «Monthly fee» sin pagar ↔ transferencia y los PROPONE con su botón (no concilia nada solo).
+  cron.schedule(
+    "30 10 * * 1-5",
+    () => {
+      ejecutarSinSolapamiento("pagosColaboradores", () => ejecutarPropuestaPagosColaboradores());
+    },
+    { timezone: TIMEZONE }
+  );
+  console.log(`[scheduler] pagosColaboradores programado: laborables 10:30 (${TIMEZONE})`);
 
   // Lo que han enviado o contestado las personas a las que se escribió con un correo a una audiencia (solo lectura; solo avisa si hay novedades).
   cron.schedule(
