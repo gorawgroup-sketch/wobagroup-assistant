@@ -386,6 +386,9 @@ const ACCIONES_SENSIBLES = new Set([
   // Conciliar una compra con VARIOS movimientos del banco (core/holded/conciliacionMultiple/): escribe en Holded, solo superadministrador.
   "concilmulti_si",
   "concilmulti_no",
+  // Lote de conciliaciones (core/holded/loteConciliaciones/): varios pares con un botón; escribe en Holded, solo superadministrador.
+  "loteconcil_si",
+  "loteconcil_no",
   "tktregla_ok",
   "tktregla_no",
   "tktdis_reanudar",

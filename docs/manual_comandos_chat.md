@@ -577,6 +577,10 @@ Cuando un gasto de correo espera un dato (fecha, moneda, comercio, empresa) y es
 
 En modo activo el aviso dice qué va a pasar y que no hace falta hacer nada («se convertirán solos en cuanto estén conciliados y con comprobante; te avisaré de cada conversión»), y cada conversión real se comunica («✅ Convertidos a ticket en Holded: …»). Solo los gastos que la regla no puede decidir llegan con botones.
 
+## Lote de conciliaciones (varios gastos ↔ varios cargos con un solo botón, 16-10-2026)
+
+Cuando hay varias parejas «este gasto ↔ este cargo» demostradas, pídelo en el chat («concilia estas parejas de Footprint: …»). Wobi relee cada par en Holded, te muestra el desglose y deja fuera, con su motivo, lo que no cubre (gastos o cargos en otra moneda, cargos mayores que el gasto, gastos con pagos, cargos ya conciliados). Pulsas **«✅ Conciliar los N pares»**: Wobi revalida todos antes de escribir el primero, los concilia de uno en uno verificando cada pago y se detiene en el primero que no pueda verificar. El resultado dice qué quedó conciliado, qué no se envió y, si algo queda «incierto», qué revisar. Pregunta por un lote con «¿cómo va el lote …?». Detalle en `docs/conciliacion-multiple.md`.
+
 ## Operación desde el servidor (puntos `/admin/*`)
 
 Para que quien opera el sistema resuelva un caso sin pedirle a Carlos que escriba comandos y sin ejecutar flujos de archivos

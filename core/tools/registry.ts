@@ -51,6 +51,7 @@ import { cambiarProveedorCompraTool } from "./cambiarProveedorCompra";
 import { aprenderReglaCashflowAgregadaTool } from "./aprenderReglaCashflowAgregada";
 import { estadoAutomatizacionHoldedTool } from "./estadoAutomatizacionHolded";
 import { conciliarMultiplesMovimientosTool, consultarConciliacionMultipleTool, reanudarConciliacionMultipleTool } from "./conciliarMultiplesMovimientos";
+import { consultarLoteConciliacionesTool, proponerLoteConciliacionesTool } from "./proponerLoteConciliaciones";
 import { editarValorCashflowTool } from "./editarValorCashflow";
 import { registrarManualCashflowTool } from "./registrarManualCashflow";
 import { reporteAprendizajeTool } from "./reporteAprendizaje";
@@ -135,6 +136,8 @@ const tools: ToolDefinition[] = [
   aprenderReglaCashflowAgregadaTool,
   estadoAutomatizacionHoldedTool,
   conciliarMultiplesMovimientosTool,
+  proponerLoteConciliacionesTool,
+  consultarLoteConciliacionesTool,
   consultarConciliacionMultipleTool,
   reanudarConciliacionMultipleTool,
   editarValorCashflowTool,

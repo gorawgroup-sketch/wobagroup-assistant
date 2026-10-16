@@ -79,6 +79,30 @@ export class ServicioConciliacionMultiple {
     return p;
   }
 
+  /**
+   * Preflight completo de un plan, SIN escribir: relee la compra y todos sus movimientos y comprueba que siguen siendo exactamente lo aprobado.
+   * Lo usa `decidir` justo antes del primer POST y el lote de conciliaciones para revalidar TODOS sus planes antes de escribir el primero.
+   */
+  private async comprobarAntesDeEscribir(p: PlanConciliacion): Promise<void> {
+    const hechos = p.movimientos.filter((m) => p.verificados.includes(claveMovimiento(m)));
+    const restantes = p.movimientos.filter((m) => !p.verificados.includes(claveMovimiento(m)));
+    if (restantes.length > 0) validarSeleccion(p.compra, restantes, { recuperacion: hechos.length > 0, parcial: p.parcial === true, unico: p.origen?.tipo === "lote" });
+    else validarCompra(p.compra);
+    await this.holded.validarClasificacion(p.empresa, p.compra.id);
+    comprobarCompra(p.compra, await this.holded.compra(p.empresa, p.compra.id));
+    for (const m of hechos) comprobarMovimiento(m, await this.holded.movimiento(p.empresa, m), true);
+    for (const m of restantes) comprobarMovimiento(m, await this.holded.movimiento(p.empresa, m));
+  }
+
+  /** Revalida un plan propuesto sin escribir nada: ok, o el motivo por el que ya no se puede aplicar. */
+  async revalidar(id: string, chatId: number): Promise<{ ok: true } | { ok: false; motivo: string }> {
+    const p = await this.consultar(id, chatId);
+    if (p.estado !== "propuesto") return { ok: false, motivo: `el plan está ${p.estado}` };
+    if (this.ahora() - p.creadoEn > TTL_PLAN) return { ok: false, motivo: "la propuesta expiró" };
+    try { await this.comprobarAntesDeEscribir(p); return { ok: true }; }
+    catch (error) { return { ok: false, motivo: error instanceof Error ? error.message : String(error) }; }
+  }
+
   async decidir(id: string, chatId: number, usuarioId: number, aprobar: boolean): Promise<PlanConciliacion> {
     const inicial = await this.consultar(id, chatId);
     return conMutex(mutexConciliacion(inicial.empresa), async () => {
@@ -96,15 +120,8 @@ export class ServicioConciliacionMultiple {
       // Tras reanudar un lote detenido, los movimientos ya verificados no se vuelven a enviar: solo se comprueba que siguen conciliados.
       const hechos = p.movimientos.filter((m) => p.verificados.includes(claveMovimiento(m)));
       const restantes = p.movimientos.filter((m) => !p.verificados.includes(claveMovimiento(m)));
-      const reanudado = hechos.length > 0;
       try {
-        // Preflight completo: ni una escritura si falla cualquiera de las referencias.
-        if (restantes.length > 0) validarSeleccion(p.compra, restantes, { recuperacion: reanudado, parcial: p.parcial === true });
-        else validarCompra(p.compra);
-        await this.holded.validarClasificacion(p.empresa, p.compra.id);
-        comprobarCompra(p.compra, await this.holded.compra(p.empresa, p.compra.id));
-        for (const m of hechos) comprobarMovimiento(m, await this.holded.movimiento(p.empresa, m), true);
-        for (const m of restantes) comprobarMovimiento(m, await this.holded.movimiento(p.empresa, m));
+        await this.comprobarAntesDeEscribir(p);
       } catch (error) {
         p.estado = "rechazado";
         p.detalle = `No se envió ninguna conciliación: ${error instanceof Error ? error.message : String(error)}`;

@@ -49,6 +49,7 @@ export async function handleConciliacionMultipleCallback(callback: TelegramCallb
     servicio: conciliacionMultiple,
     puedeAprobar: async (id) => puedeAprobarAccionSensible(await obtenerRolUsuario(id)),
     responder: answerCallbackQuery, enviar: sendTelegramMessage,
-    alCompletar: async (p) => { const { registrarPlanCompletadoDeDeclaracion } = await import("../../soportes/declaracion/aplicarDeclaracion"); await registrarPlanCompletadoDeDeclaracion(p); },
+    // Solo los planes que nacen de una declaración firmada cierran su origen aquí; los de un lote los gobierna el propio lote.
+    alCompletar: async (p) => { if (p.origen?.tipo !== "declaracion") return; const { registrarPlanCompletadoDeDeclaracion } = await import("../../soportes/declaracion/aplicarDeclaracion"); await registrarPlanCompletadoDeDeclaracion(p); },
   })(callback);
 }

@@ -83,3 +83,14 @@ Caso real (Footprint, 2026-10-04): hotel Metroart, 581,92 USD cobrados en 451,30
 - Para cerrar el saldo después, un segundo plan con el cargo que llega (basta uno si la compra ya tiene pagos). Un plan completado ya no reserva la compra.
 - Fase B (hecha): tras crear el gasto, `core/gastos/conciliacionParcialRecibo.ts` ofrece el cargo con un botón («Conciliar esta parte») cuando hay UN único candidato del mismo proveedor (palabra distintiva), moneda y fecha; el botón reutiliza `gasto_conciliar_si:ID:p<movementId>` y vuelve a localizar el cargo antes de escribir.
 
+## Lote de conciliaciones: varios pares gasto↔cargo con un solo botón
+
+Código: `core/holded/loteConciliaciones/` (`model.ts`, `service.ts`, `store.ts`, `callback.ts`, `proponer.ts`, `runtime.ts`), herramienta `proponer_lote_conciliaciones` (y `consultar_lote_conciliaciones`). Pedido por Carlos el 16-10-2026 tras la auditoría de conciliación de Footprint (17 parejas demostradas).
+
+- **No es una vía nueva de escritura.** Cada par es un plan de este mismo motor (origen `{ tipo: "lote" }`): relee Holded, reserva compra y cargo, persiste el paso en vuelo antes del POST y verifica pago, cuenta, fecha, importe y saldo del gasto al céntimo. Una prueba comprueba que el lote no escribe en Holded por su cuenta.
+- **Proponer** (`proponer_lote_conciliaciones`, también por `/admin/proponer-accion`): de 1 a 20 pares de una misma empresa con `compra_id`, `cuenta_id`, `movimiento_id` y fecha del cargo. Relee cada par y deja fuera, con su motivo, los que el lote no cubre; propone el resto con UN botón «✅ Conciliar los N pares». No escribe nada.
+- **Alcance de esta versión:** gasto y cargo en EUR, importe exacto, gasto sin pagos previos y cargo libre. Quedan fuera (siguen por su botón individual): gastos en otra moneda (Holded exige ajustar la tasa del gasto, una edición que no se hace dentro de un lote), cargos mayores que el gasto (comisión bancaria) y cargos ya conciliados.
+- **Aprobar** (solo superadministrador): (1) revalida TODOS los planes sin escribir; si uno ya no es exactamente lo aprobado no se envía ninguno y se cancelan todos; (2) persiste el lote «ejecutando» antes del primer POST; (3) ejecuta de uno en uno y verifica cada pago; (4) se detiene en el primero que no pueda verificar: lo anterior queda hecho, los siguientes NO se envían y sus planes se cancelan.
+- **Estados:** `propuesto`, `ejecutando`, `completado`, `parcial` (se detuvo tras conciliar alguno), `incierto` (puede haber un pago aplicado sin verificar: revisar, no repetir), `rechazado` (nada se envió) y `cancelado`. Caduca a las 24 h como sus planes. Un doble clic o una reentrega nunca repite una escritura.
+- **Registro:** pestaña oculta `_lotes_conciliaciones_audit` (append-only, con verificación por relectura); los pagos de cada par quedan en `_conciliaciones_multiples_audit`. Igual que el resto, requiere un único proceso escritor.
+
