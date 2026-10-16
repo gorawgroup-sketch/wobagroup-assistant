@@ -26,6 +26,8 @@ export const HERRAMIENTAS_PERMITIDAS: ReadonlySet<string> = new Set([
   "conciliar_movimiento_bancario",
   // Varios cargos para una compra: manda el desglose con «Confirmar conciliación múltiple» / Cancelar; escribe solo el botón.
   "conciliar_multiples_movimientos_bancarios",
+  // Varios pares gasto↔cargo con UN solo botón: relee, revalida todo y escribe solo con el botón del superadmin; nunca al proponer.
+  "proponer_lote_conciliaciones",
   // Paso C de una declaración firmada: plan con botón «Aplicar» (o cierre si todo estaba conciliado); nunca escribe sola.
   "aplicar_declaracion_firmada",
 ]);

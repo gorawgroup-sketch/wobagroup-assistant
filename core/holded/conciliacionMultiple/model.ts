@@ -1,8 +1,11 @@
 import type { Empresa } from "../client";
 
 export interface ReferenciaMovimiento { accountId: string; movementId: string; fecha: string }
-/** Quién originó el plan (hoy: una declaración de gastos sin soporte firmada). Al completarse, ese origen se cierra. */
-export interface OrigenPlan { tipo: "declaracion"; id: string }
+/**
+ * Quién originó el plan: una declaración de gastos sin soporte firmada (al completarse, ese origen se cierra) o un lote de conciliaciones
+ * (core/holded/loteConciliaciones/: varios pares compra↔cargo con un solo botón; el lote gobierna la aprobación de cada plan).
+ */
+export interface OrigenPlan { tipo: "declaracion" | "lote"; id: string }
 /**
  * Conciliación decidida ANTES de crear la compra (los cargos ya se conocen): viaja con la propuesta de gasto y, al crearse la
  * compra, se prepara el plan múltiple con estos movimientos en vez de buscar un único cargo por importe y fecha.
