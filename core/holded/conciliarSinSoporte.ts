@@ -5,7 +5,7 @@ import type { TelegramCallbackQuery } from "../telegram/types";
 import { conMutex } from "../utils/asyncMutex";
 import { estaConciliado, listBankMovements, type Empresa } from "./client";
 import { buscarRestoAprendido, registrarRestoComoGastoBancario } from "./restoCargoAprendidoSheet";
-import { crearGastoHolded, leerEstadoMovimiento, marcarMovimientoConciliadoSinDocumento, obtenerCompraHoldedPorId, reconciliarMovimiento } from "./write";
+import { crearGastoHolded, FechaBloqueadaError, leerEstadoMovimiento, marcarMovimientoConciliadoSinDocumento, obtenerCompraHoldedPorId, reconciliarMovimiento } from "./write";
 
 /**
  * Cerrar un cargo SIN soporte — decisión explícita de Carlos (2026-10-06, correo de Alejandro, Footprint). Dos modos, ambos con
@@ -285,15 +285,24 @@ async function ejecutarRestoExclusivo(p: PropuestaSinSoporte, d: DatosResto, dep
   if (typeof ev === "string") return `ℹ️ El cargo ya cambió en Holded (${ev}); no creé nada.`;
   if (Math.abs(ev.resto - d.resto) > 0.005) return `ℹ️ El resto del cargo cambió en Holded (ahora ${dinero(ev.resto, d.moneda)}, se aprobó ${dinero(d.resto, d.moneda)}); no creé nada.`;
   // Clave determinista por cargo y resto (no por propuesta): si el gasto se creó y la conciliación falló, reintentar reutiliza ese gasto en vez de crear otro.
-  const { id: gastoId } = await deps.crearGasto(p.empresa, {
-    contactId: d.plantilla.contactId,
-    fecha: d.movimiento.fecha,
-    descripcion: d.descripcion,
-    lineas: [{ concepto: d.descripcion, base: d.resto, tipoIvaPct: 0, tratamientoFiscal: "sin_impuesto" }],
-    cuentaId: d.plantilla.cuentaId,
-    tags: d.plantilla.tags,
-    moneda: d.moneda,
-  }, { idempotencyKey: `resto-banco:${p.empresa}:${d.movimiento.cuentaId}:${d.movimiento.movimientoId}:${Math.round(d.resto * 100)}`, proceso: "gasto_bancario_resto" });
+  let gastoId: string;
+  try {
+    ({ id: gastoId } = await deps.crearGasto(p.empresa, {
+      contactId: d.plantilla.contactId,
+      fecha: d.movimiento.fecha,
+      descripcion: d.descripcion,
+      lineas: [{ concepto: d.descripcion, base: d.resto, tipoIvaPct: 0, tratamientoFiscal: "sin_impuesto" }],
+      cuentaId: d.plantilla.cuentaId,
+      tags: d.plantilla.tags,
+      moneda: d.moneda,
+    }, { idempotencyKey: `resto-banco:${p.empresa}:${d.movimiento.cuentaId}:${d.movimiento.movimientoId}:${Math.round(d.resto * 100)}`, proceso: "gasto_bancario_resto" }));
+  } catch (error) {
+    // Decisión de Carlos (16-10): si Holded rechaza por periodo cerrado, no se rodea con otra fecha; el cargo queda abierto y lo ajusta él a mano.
+    if (error instanceof FechaBloqueadaError) {
+      return `ℹ️ Holded tiene cerrado el periodo del ${fechaCorta(d.movimiento.fecha)} y no deja crear el gasto bancario de ${dinero(d.resto, d.moneda)}. No creé nada: el cargo sigue con ${dinero(d.resto, d.moneda)} sin conciliar para que lo ajustes a mano.`;
+    }
+    throw error;
+  }
   let r: Awaited<ReturnType<DepsResto["reconciliar"]>>;
   try {
     r = await deps.reconciliar(p.empresa, d.movimiento.cuentaId, d.movimiento.movimientoId, d.movimiento.fecha, gastoId, { permitirCargoMayor: true });
