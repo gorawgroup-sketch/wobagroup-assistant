@@ -64,6 +64,12 @@ export const conciliarMovimientoTool: ToolDefinition = {
       cuenta_id: { type: "string", description: "Con movimiento_id: id de la cuenta bancaria del cargo elegido por el usuario." },
       movimiento_id: { type: "string", description: "Con cuenta_id: id del movimiento bancario que el usuario dice que corresponde a este gasto." },
       fecha_movimiento: { type: "string", description: "YYYY-MM-DD del cargo (opcional; ayuda a localizarlo si difiere de la fecha del gasto)." },
+      cargo_mayor: {
+        type: "boolean",
+        description:
+          "Solo con cuenta_id y movimiento_id: true cuando el cargo es MAYOR que el gasto porque incluye una comisión (transferencia al extranjero) y gasto y cargo están en la misma moneda. " +
+          "El gasto conserva su importe, se concilia su parte y el resto del cargo queda abierto; nunca se edita el gasto. Sin esto, un importe distinto se trata como coincidencia aproximada.",
+      },
     },
     required: ["empresa"],
   },
@@ -125,7 +131,8 @@ export const conciliarMovimientoTool: ToolDefinition = {
         if (!movimiento) {
           return `No encontré el movimiento ${movimientoId} en la cuenta ${cuentaId} entre ${desde} y ${hasta}. Pasa fecha_movimiento con la fecha real del cargo.`;
         }
-        const par = evaluarParElegido(compra, movimiento as never, cuentaId);
+        const cargoMayor = input.cargo_mayor === true;
+        const par = evaluarParElegido(compra, movimiento as never, cuentaId, { cargoMayor });
         if (par.estado === "rechazado") {
           return `No preparo esa conciliación: ${par.motivo}`;
         }
@@ -133,7 +140,8 @@ export const conciliarMovimientoTool: ToolDefinition = {
           const { ofrecerEleccionMovimientosAmbiguos } = await import("../gastos/gastoCallbackHandler");
           const descripcionPar = `${gasto.contactName} — ${gasto.total.toFixed(2)} ${moneda}`;
           const resultado = await ofrecerEleccionMovimientosAmbiguos(
-            empresa, gastoId, descripcionPar, chatId, [par.candidato], false, true, proveedor, undefined, true, undefined
+            // Un cargo mayor NO es «aproximado»: esa marca haría que el flujo ajustara el importe del gasto al del cargo.
+            empresa, gastoId, descripcionPar, chatId, [par.candidato], false, !cargoMayor, proveedor, undefined, true, undefined, gasto.total
           );
           return `Preparé la conciliación elegida por el usuario: ${descripcionPar} ↔ «${par.candidato.descripcion}» ` +
             `(${(par.candidato.montoNativo ?? par.candidato.monto).toFixed(2)} ${par.candidato.monedaNativa ?? par.candidato.moneda}, ${par.candidato.fecha}). ` +
