@@ -24,6 +24,8 @@ export const HERRAMIENTAS_PERMITIDAS: ReadonlySet<string> = new Set([
   "solicitar_datos_faltantes_a_creadores",
   // Prepara la conciliación de una compra ya registrada con su cargo: manda la pregunta «Conciliar con #1» (Sí/No); escribe solo el botón.
   "conciliar_movimiento_bancario",
+  // Cierra un cargo sin soporte (par, gasto o resto de un cargo mayor): muestra el antes/ahora con ✅/❌ de superadmin; escribe solo el botón.
+  "proponer_cerrar_cargo_sin_soporte",
   // Varios cargos para una compra: manda el desglose con «Confirmar conciliación múltiple» / Cancelar; escribe solo el botón.
   "conciliar_multiples_movimientos_bancarios",
   // Varios pares gasto↔cargo con UN solo botón: relee, revalida todo y escribe solo con el botón del superadmin; nunca al proponer.
